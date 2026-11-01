@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "UpKeep.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "UpKeep.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

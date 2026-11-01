@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageReference Include="xunit.v3.mtp-off" Version="4.0.2" />
+    <PackageReference Include="Microsoft.WindowsPackageManager.ComInterop" Version="1.29.380" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\UpKeep.Core\UpKeep.Core.csproj" />
+    <Using Include="Xunit" />
+    <Compile Include="..\..\src\UpKeep.App\Platform\RecycleBinService.cs" Link="Platform\RecycleBinService.cs" />
+    <Compile Include="..\..\src\UpKeep.App\Platform\TrayNotification.cs" Link="Platform\TrayNotification.cs" />
+    <Compile Include="..\..\src\UpKeep.App\CleanupText.cs" Link="CleanupText.cs" />
+  </ItemGroup>
+</Project>
