@@ -29,6 +29,7 @@ public sealed class CleanupExecutor(IRecycleBinService recycle, OperationJournal
         try
         {
             journal.Write(new(OperationName, "Pending", selection.CandidateIds.Count, 0, "Reviewed cleanup selection is pending."));
+            journalFailed = !SaveProgress(0);
             foreach (var candidate in selection.Analysis.Manifest.Read())
             {
                 if (!IsSelected(selection, candidate))
@@ -44,7 +45,6 @@ public sealed class CleanupExecutor(IRecycleBinService recycle, OperationJournal
                     results.Add(new(candidate.Id, "Canceled", 0, target + ": Canceled before removal."));
                     continue;
                 }
-                journal.Write(new(OperationName, "Running", 0, results.Count, "Removing reviewed items."));
                 await RemoveCandidateAsync(root, candidate, results, token);
                 AddResultDetails(results, resultStart, target, ref completed, ref skipped, ref failed);
                 if (clock.ElapsedMilliseconds >= 200)

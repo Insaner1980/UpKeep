@@ -16,6 +16,8 @@ public class CommandProviderTests
         var result = await new CommandProvider(ManagerKind.PowerShell).CheckAsync(new(new ToolLocator([scratch.Root]), runner, scratch.Root), TestContext.Current.CancellationToken);
         Assert.True(result.Complete);
         Assert.Equal("powershell.exe", Path.GetFileName(Assert.Single(runner.Requests).Executable));
+        Assert.Contains("-ExecutionPolicy", runner.Requests[0].Arguments);
+        Assert.Contains("Bypass", runner.Requests[0].Arguments);
         Assert.All(runner.Requests, r => Assert.Equal(ExecutionKind.Probe, r.Kind));
         scratch.Write("trufflehog.exe", "");
         var item = Assert.Single((await new CommandProvider(ManagerKind.TruffleHog).CheckAsync(new(new ToolLocator([scratch.Root]), new Runner(_ => new(0, "1.0", "")), scratch.Root), TestContext.Current.CancellationToken)).Items);
@@ -98,6 +100,24 @@ public class CommandProviderTests
         Assert.Equal(scratch.Root, mutation.WorkingDirectory);
         Assert.Equal(item.Metadata!.Tool.Executable, mutation.Executable);
         Assert.DoesNotContain("--all", mutation.Arguments);
+        if (kind == ManagerKind.CodeExtension)
+        {
+            Assert.Equal(new[] { "--install-extension", item.Key.PackageId, "--force" }, mutation.Arguments.Skip(item.Metadata.Tool.PrefixArguments.Count));
+        }
+        else
+        {
+            Assert.DoesNotContain("--force", mutation.Arguments);
+        }
+        if (kind == ManagerKind.PowerShell)
+        {
+            Assert.All(runner.Requests, request =>
+            {
+                var arguments = request.Arguments.ToList();
+                var policy = arguments.IndexOf("-ExecutionPolicy");
+                Assert.True(policy >= 0 && policy < arguments.IndexOf("-File"));
+                Assert.Equal("Bypass", arguments[policy + 1]);
+            });
+        }
         Assert.True((await provider.VerifyAsync(item.Request(), TestContext.Current.CancellationToken)).Verified);
     }
 

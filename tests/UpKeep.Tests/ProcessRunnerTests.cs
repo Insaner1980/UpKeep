@@ -6,6 +6,47 @@ namespace UpKeep.Tests;
 public class ProcessRunnerTests
 {
     [Fact]
+    public async Task ProbeDeadlineAlsoBoundsPipesInheritedByAnExitedParentsChild()
+    {
+        using var scratch = new Scratch();
+        var script = """
+            $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'powershell.exe'))
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            $info.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20"'
+            $child = [Diagnostics.Process]::Start($info)
+            [IO.File]::WriteAllText((Join-Path $PWD 'owned-child.txt'), ($child.Id.ToString() + '|' + $child.StartTime.ToUniversalTime().Ticks.ToString()))
+            [Console]::Out.Write('parent-exited')
+            """;
+        try
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var result = await new ProcessRunner().RunAsync(Script(scratch, script, timeout: TimeSpan.FromSeconds(4)), null, TestContext.Current.CancellationToken);
+            Assert.Contains("parent-exited", result.StandardOutput);
+            Assert.True(result.Canceled);
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(12));
+        }
+        finally
+        {
+            var identityPath = Path.Combine(scratch.Root, "owned-child.txt");
+            if (File.Exists(identityPath))
+            {
+                var identity = File.ReadAllText(identityPath).Split('|');
+                try
+                {
+                    using var child = System.Diagnostics.Process.GetProcessById(int.Parse(identity[0]));
+                    if (child.StartTime.ToUniversalTime().Ticks == long.Parse(identity[1]) && !child.HasExited)
+                    {
+                        child.Kill(entireProcessTree: true);
+                        await child.WaitForExitAsync(CancellationToken.None);
+                    }
+                }
+                catch (ArgumentException) { /* The owned child already exited. */ }
+            }
+        }
+    }
+
+    [Fact]
     public async Task EnvironmentOverridesAndUtf16OutputArePreserved()
     {
         using var scratch = new Scratch();

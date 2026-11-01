@@ -37,6 +37,7 @@ public class RootDiscoveryTests
         Assert.All(roots, r => Assert.True(PathGuard.ValidLocalRoot(r.Path)));
         Assert.Equal(4, roots.Count(r => r.Kind == RootKind.ProtectedSystem));
         Assert.Contains(roots, r => r.Kind == RootKind.Temporary);
+        Assert.All(roots.Where(r => r.Kind == RootKind.Logs), r => Assert.True(Directory.Exists(r.Path)));
     }
 
     [Fact]

@@ -6,6 +6,40 @@ namespace UpKeep.Tests;
 
 public class CleanupExecutorTests
 {
+    private sealed class JournalBreakingRecycle(string journalPath) : IRecycleBinService
+    {
+        public Task<IReadOnlyList<CleanupItemResult>> RecycleAsync(IReadOnlyList<ValidatedCleanupFile> files, CancellationToken cancellationToken)
+        {
+            if (File.Exists(journalPath))
+            {
+                File.Delete(journalPath);
+                Directory.CreateDirectory(journalPath);
+            }
+            return Task.FromResult<IReadOnlyList<CleanupItemResult>>(files.Select(file => new CleanupItemResult(file.Candidate.Id, "Recycled", file.Candidate.LogicalSize, "Fixture result")).ToArray());
+        }
+    }
+
+    [Fact]
+    public async Task JournalFailureBetweenCandidatesDoesNotDiscardEarlierResults()
+    {
+        using var scratch = new Scratch();
+        var file = scratch.Write("retained.tmp", "keep");
+        var identity = PathGuard.Snapshot(file);
+        using var manifest = new CleanupManifest(new(Path.Combine(scratch.Root, "manifest")));
+        for (int i = 0; i < 3; i++)
+            manifest.Append(new(i.ToString(), "root", "retained.tmp", CleanupCategory.TestArtifacts, "test", 4, identity, Eligibility.Eligible, RemovalMethod.Recycle, "", "group"));
+        manifest.Seal();
+        var analysis = new CleanupAnalysis(manifest, [new("root", scratch.Root, RootKind.Project, CleanupCategory.TestArtifacts, PathGuard.Snapshot(scratch.Root))], [], []);
+        var journalRoot = Path.Combine(scratch.Root, "journal");
+        var gate = new UpKeep.Core.Updates.OperationGate();
+        var executor = new CleanupExecutor(new JournalBreakingRecycle(Path.Combine(journalRoot, "last-operation.json")), new(new(journalRoot)), gate);
+        var result = await executor.ExecuteAsync(new(analysis, new HashSet<string>(), new HashSet<string> { "group" }), new Counter(), TestContext.Current.CancellationToken);
+        Assert.Equal(3, result.Items.Count);
+        Assert.Equal("Recycled", result.Items[0].State);
+        Assert.False(gate.IsBusy);
+        Assert.Equal("keep", File.ReadAllText(file));
+    }
+
     private sealed class FailingRecycle(string? journalPath = null) : IRecycleBinService
     {
         public async Task<IReadOnlyList<CleanupItemResult>> RecycleAsync(IReadOnlyList<ValidatedCleanupFile> files, CancellationToken cancellationToken)

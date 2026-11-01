@@ -47,6 +47,7 @@ public sealed partial class MainWindow
     private bool busy, exitWhenIdle, updatingSelection, updating, projectFoldersConfigured;
     private Grid? detailsPanel;
     private Control? detailsOrigin;
+    private CleanupCategory? detailsCategory;
 
     private void InitializeServices()
     {
@@ -239,20 +240,22 @@ public sealed partial class MainWindow
             UpdateSummary.Text = "Select at least one item.";
             return;
         }
-        if (selected.Any(i => i.Kind == UpdateKind.RunUpdater) && !await Confirm("Run selected updaters?", string.Join("\n", selected.Select(i => i.Name + ": " + i.Detail)), "Run updater"))
-        {
-            return;
-        }
-
-        if (!await ReviewDistroTransactionsAsync(selected))
-            return;
-        updating = true;
-        SetBusy(true, true);
-        UpdateSummary.Text = $"Preparing {selected.Length} selected update(s)…";
-        UpdateStage.Text = "Checking installation before updating…";
-        var progress = UpdateProgressReporter(selected.Length);
+        SetBusy(true);
         try
         {
+            if (selected.Any(i => i.Kind == UpdateKind.RunUpdater) && !await Confirm("Run selected updaters?", string.Join("\n", selected.Select(i => i.Name + ": " + i.Detail)), "Run updater"))
+            {
+                return;
+            }
+            if (!await ReviewDistroTransactionsAsync(selected) || exitWhenIdle)
+            {
+                return;
+            }
+            updating = true;
+            SetBusy(true, true);
+            UpdateSummary.Text = $"Preparing {selected.Length} selected update(s)…";
+            UpdateStage.Text = "Checking installation before updating…";
+            var progress = UpdateProgressReporter(selected.Length);
             var results = await Task.Run(() => coordinator.ExecuteAsync(selected, progress, CancellationToken.None), CancellationToken.None);
             updates = updates.Select(i => results.FirstOrDefault(r => r.Key == i.Key) is var found && found.Result is not null ? i with { State = found.Result.State, Detail = found.Result.Detail } : i).ToArray();
             selectedUpdates.Clear();
@@ -363,12 +366,19 @@ public sealed partial class MainWindow
         detailsPanel = null;
         Navigation.Visibility = Visibility.Visible;
         RenderCleanup();
+        if (detailsCategory is { } category)
+        {
+            detailsOrigin = CleanupList.Items.OfType<Grid>().ElementAt((int)category).Children.OfType<Button>().Single();
+            CleanupList.UpdateLayout();
+        }
         detailsOrigin?.Focus(FocusState.Programmatic);
-        RefreshSelection();
+        detailsOrigin = null;
+        detailsCategory = null;
     }
     private void ShowCategory(CleanupCategory category, Control origin)
     {
         var list = OpenDetails(Category(category), origin);
+        detailsCategory = category;
         if (analysis is not null && !analysis.Groups.Any(g => g.Category == category) && !actions.Any(a => a.Category == category))
         {
             list.Items.Add(Text(CleanupText.CategorySummary(category, [], 0, projectFoldersConfigured)));
@@ -399,6 +409,7 @@ public sealed partial class MainWindow
         }
 
         var list = OpenDetails(group.Name, origin);
+        detailsCategory = group.Category;
         var page = analysis.Manifest.Page(group.Id, offset);
         foreach (var candidate in page)
         {
@@ -432,23 +443,30 @@ public sealed partial class MainWindow
         }
         var selection = new CleanupSelection(analysis, selectedFiles.ToHashSet(), selectedGroups.ToHashSet());
         var chosenActions = actions.Where(a => selectedActions.Contains(a.Id)).ToArray();
-        var counts = await Task.Run(() => CleanupMethodCounts(selection), CancellationToken.None);
-        if (!await Confirm("Clean selected items?", string.Join("\n", counts.Concat(chosenActions.Select(a => a.Name + ": " + a.Detail))) + "\nChanged, inaccessible, or locked files will be skipped. Recycled data does not free disk space.", "Clean selected"))
-        {
-            return;
-        }
-
-        CloseDetails();
-        SetBusy(true, true);
-        workCancellation = new();
+        SetBusy(true);
         try
         {
+            var counts = await Task.Run(() => CleanupMethodCounts(selection), CancellationToken.None);
+            if (exitWhenIdle || !await Confirm("Clean selected items?", string.Join("\n", counts.Concat(chosenActions.Select(a => a.Name + ": " + a.Detail))) + "\nChanged, inaccessible, or locked files will be skipped. Recycled data does not free disk space.", "Clean selected"))
+            {
+                return;
+            }
+            CloseDetails();
+            SetBusy(true, true);
+            workCancellation = new();
             var result = await executor.ExecuteAsync(selection, new Progress<CleanupProgress>(p => CleanupSummary.Text = $"{p.Completed} items cleaned, {p.Skipped} skipped"), workCancellation.Token);
             var items = result.Items.ToList();
             await ExecuteManagedActionsAsync(chosenActions, items);
             var complete = new CleanupResult(items);
             CleanupSummary.Text = $"{complete.Completed} items cleaned, {complete.Skipped} skipped, {complete.Failed} failed";
-            journal.Write(new("Cleanup", "Completed", items.Count, items.Count, CleanupSummary.Text));
+            try
+            {
+                journal.Write(new("Cleanup", "Completed", items.Count, items.Count, CleanupSummary.Text));
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                CleanupSummary.Text += ". The summary could not be saved; review the results below.";
+            }
             selectedFiles.Clear();
             selectedFileMetadata.Clear();
             selectedGroups.Clear();
@@ -459,7 +477,7 @@ public sealed partial class MainWindow
             ShowCleanupResults(complete);
         }
         catch (Exception e) { CleanupSummary.Text = e.Message; }
-        finally { workCancellation.Dispose(); workCancellation = null; SetBusy(false); }
+        finally { workCancellation?.Dispose(); workCancellation = null; SetBusy(false); }
     }
     private void ShowCleanupResults(CleanupResult result, int offset = 0)
     {
@@ -509,6 +527,7 @@ public sealed partial class MainWindow
 
             list.Items.Add(Text("Protected removal is not enabled until the elevated handshake has been verified in an authorized Windows test session."));
         }
+        catch (System.ComponentModel.Win32Exception error) { CleanupSummary.Text = "Could not start protected analysis: " + error.Message; }
         finally { SetBusy(false); dialogOpen = false; }
     }
     private async Task<bool> Confirm(string title, string message, string primary)
@@ -733,9 +752,10 @@ public sealed partial class MainWindow
             {
                 foreach (var action in chosenActions)
                 {
-                    journal.Write(new("Cleanup", "Running", chosenActions.Length, items.Count, "Manager action: " + action.Name));
                     try
                     {
+                        workCancellation!.Token.ThrowIfCancellationRequested();
+                        journal.Write(new("Cleanup", "Running", chosenActions.Length, items.Count, "Manager action: " + action.Name));
                         var outcome = await managed.ExecuteAsync(action, workCancellation!.Token);
                         items.Add(outcome with
                         {
@@ -743,6 +763,11 @@ public sealed partial class MainWindow
                         });
                     }
                     catch (OperationCanceledException) { items.Add(new(action.Id, CanceledMessage, 0, action.Name + ": Canceled before starting.")); }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                    {
+                        items.Add(new(action.Id, "Failed", 0, action.Name + ": " + error.Message));
+                        await workCancellation!.CancelAsync();
+                    }
                 }
             }
             finally { gate.Exit(); }

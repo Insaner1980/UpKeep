@@ -13,5 +13,6 @@
     <Compile Include="..\..\src\UpKeep.App\Platform\RecycleBinService.cs" Link="Platform\RecycleBinService.cs" />
     <Compile Include="..\..\src\UpKeep.App\Platform\TrayNotification.cs" Link="Platform\TrayNotification.cs" />
     <Compile Include="..\..\src\UpKeep.App\CleanupText.cs" Link="CleanupText.cs" />
+    <Compile Include="..\..\src\UpKeep.CleanupHost\ProtectedTempService.cs" Link="ProtectedTempService.cs" />
   </ItemGroup>
 </Project>

@@ -33,8 +33,10 @@ public static class CleanupRootResolver
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var codex = Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(home, ".codex");
-        Add(Path.Combine(codex, "log"), RootKind.Logs, CleanupCategory.OldLogs);
-        Add(Path.Combine(local, "CrashDumps"), RootKind.Logs, CleanupCategory.OldLogs);
+        foreach (var path in new[] { Path.Combine(codex, "log"), Path.Combine(local, "CrashDumps") }.Where(Directory.Exists))
+        {
+            Add(path, RootKind.Logs, CleanupCategory.OldLogs);
+        }
         foreach (var path in new[] { Path.Combine(home, ".cache", "codex-runtimes"), Path.Combine(home, ".sonar", "cache"), Path.Combine(home, ".m2", "repository"), Environment.GetEnvironmentVariable("GRADLE_USER_HOME") ?? Path.Combine(home, ".gradle"), Path.Combine(local, "ms-playwright") }.Where(Directory.Exists))
         {
             Add(path, RootKind.ReviewOnly, CleanupCategory.PackageCaches);

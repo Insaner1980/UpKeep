@@ -190,7 +190,8 @@ public sealed class CleanupAnalyzer(AppPaths paths, DiscoveryContext context)
             }
 
             var relative = Path.GetRelativePath(root.Path, entry.FullName);
-            var policy = CleanupPolicy.Classify(root, relative, entry.LastWriteTimeUtc, DateTime.UtcNow, tracked?.Contains(entry.FullName) == true, node.Generated);
+            var policy = CleanupPolicy.Classify(root, relative, entry.LastWriteTimeUtc, DateTime.UtcNow, tracked?.Contains(entry.FullName) == true, node.Generated,
+                node.Output is null ? null : Path.GetRelativePath(node.Output, entry.FullName));
             if (policy.Eligibility == Eligibility.Protected)
             {
                 return;

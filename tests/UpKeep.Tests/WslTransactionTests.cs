@@ -37,9 +37,10 @@ public class WslTransactionTests
     public async Task UnapprovedOrChangedTransactionCannotMutate(bool approve, bool change)
     {
         using var scratch = new Scratch();
+        scratch.Write("wsl.exe", "");
         var runner = new Runner();
         var provider = new WslDistroProvider("FixtureOnly");
-        var item = Assert.Single((await provider.CheckAsync(new(new ToolLocator(), runner, scratch.Root), TestContext.Current.CancellationToken)).Items);
+        var item = Assert.Single((await provider.CheckAsync(new(new ToolLocator([scratch.Root]), runner, scratch.Root), TestContext.Current.CancellationToken)).Items);
         if (approve)
         {
             provider.ApprovePreview(item, await provider.PreviewAsync(item, TestContext.Current.CancellationToken));

@@ -12,6 +12,7 @@ public sealed partial class MainWindow : Window
     private readonly TrayIconService tray;
     private bool exiting;
     private bool dialogOpen;
+    private long? deactivationHideTime;
 
     public MainWindow(UpKeep.Core.Storage.AppPaths? storagePaths = null)
     {
@@ -27,21 +28,34 @@ public sealed partial class MainWindow : Window
         tray.PlacePanel();
         InitializeServices();
         AppWindow.Closing += (_, e) => { if (!exiting) { e.Cancel = true; AppWindow.Hide(); } };
-        Activated += (_, e) => { if (e.WindowActivationState == WindowActivationState.Deactivated && !dialogOpen) { AppWindow.Hide(); } };
+        Activated += (_, e) => { if (e.WindowActivationState == WindowActivationState.Deactivated && !dialogOpen) { HideOnDeactivation(); } };
         Closed += (_, _) => { analysis?.Dispose(); tray.Dispose(); };
     }
 
-    public void ShowPanel() => tray.ShowPanel();
+    public void ShowPanel()
+    {
+        deactivationHideTime = null;
+        tray.ShowPanel();
+    }
+    private void HideOnDeactivation()
+    {
+        if (AppWindow.IsVisible)
+        {
+            deactivationHideTime = Environment.TickCount64;
+            AppWindow.Hide();
+        }
+    }
     private void TogglePanel()
     {
         if (AppWindow.IsVisible)
         {
             AppWindow.Hide();
         }
-        else
+        else if (deactivationHideTime is not { } hiddenAt || Environment.TickCount64 - hiddenAt > 300)
         {
             ShowPanel();
         }
+        deactivationHideTime = null;
     }
     private async void RequestExit()
     {

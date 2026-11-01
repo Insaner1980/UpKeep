@@ -52,13 +52,19 @@ public sealed class ProcessRunner : IProcessRunner
         var sync = new object();
         var retained = 0;
         var truncated = false;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (request.Kind == ExecutionKind.Probe)
+        {
+            timeout.CancelAfter(request.Timeout ?? TimeSpan.FromSeconds(60));
+        }
+        var readToken = request.Kind == ExecutionKind.Probe ? timeout.Token : CancellationToken.None;
         // A UTF-16 character needs at most four UTF-8 bytes, so the combined capture cannot exceed 1 MiB.
         async Task Drain(StreamReader reader, StringBuilder destination)
         {
             var buffer = new char[4096];
             int read;
             // Drain to EOF even when queued work is canceled; an active mutation must finish.
-            while ((read = await reader.ReadAsync(buffer, CancellationToken.None)) != 0)
+            while ((read = await reader.ReadAsync(buffer, readToken)) != 0)
             {
                 lock (sync)
                 {
@@ -72,15 +78,10 @@ public sealed class ProcessRunner : IProcessRunner
         var drainOut = Drain(process.StandardOutput, stdout);
         var drainError = Drain(process.StandardError, stderr);
         bool canceled = false;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (request.Kind == ExecutionKind.Probe)
-        {
-            timeout.CancelAfter(request.Timeout ?? TimeSpan.FromSeconds(60));
-        }
-
         try
         {
             await process.WaitForExitAsync(request.Kind == ExecutionKind.Probe ? timeout.Token : CancellationToken.None);
+            await Task.WhenAll(drainOut, drainError);
         }
         catch (OperationCanceledException) when (request.Kind == ExecutionKind.Probe)
         {
@@ -96,8 +97,14 @@ public sealed class ProcessRunner : IProcessRunner
             { // The owned child exited between the state check and termination.
             }
             await process.WaitForExitAsync(CancellationToken.None);
+            try
+            {
+                await Task.WhenAll(drainOut, drainError);
+            }
+            catch (OperationCanceledException)
+            { // Probe capture ends at the same deadline even if a descendant retains a pipe handle.
+            }
         }
-        await Task.WhenAll(drainOut, drainError);
         return new(process.ExitCode, stdout.ToString(), stderr.ToString(), truncated, canceled);
     }
     private static bool ValidRequest(ProcessRequest request) =>

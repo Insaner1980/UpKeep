@@ -251,7 +251,7 @@ public sealed partial class CommandProvider(ManagerKind manager) : IUpdateProvid
     {
         bool complete = true;
         var script = Path.Combine(AppContext.BaseDirectory, "Updates", "PowerShellResources.ps1");
-        using var json = JsonDocument.Parse(await Probe(tool, cancellationToken, "-NoProfile", "-NonInteractive", "-File", script, "-Action", "List"));
+        using var json = JsonDocument.Parse(await Probe(tool, cancellationToken, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "List"));
         foreach (var module in json.RootElement.GetProperty("items").EnumerateArray())
         {
             var id = module.GetProperty("name").GetString()!;
@@ -298,8 +298,8 @@ public sealed partial class CommandProvider(ManagerKind manager) : IUpdateProvid
             ManagerKind.DotNetTool => ["tool", UpdateCommand, GlobalOption, id],
             ManagerKind.VisualStudio => [UpdateCommand, "--installPath", scope, "--passive", "--norestart"],
             ManagerKind.Wsl when request.Kind == UpdateKind.RunUpdater => ["--update"],
-            ManagerKind.CodeExtension => ["--install-extension", id],
-            ManagerKind.PowerShell => ["-NoProfile", "-NonInteractive", "-File", Path.Combine(AppContext.BaseDirectory, "Updates", "PowerShellResources.ps1"), "-Action", "Update", "-Name", id, "-TargetVersion", target!, "-ReviewedPath", scope],
+            ManagerKind.CodeExtension => ["--install-extension", id, "--force"],
+            ManagerKind.PowerShell => ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(AppContext.BaseDirectory, "Updates", "PowerShellResources.ps1"), "-Action", "Update", "-Name", id, "-TargetVersion", target!, "-ReviewedPath", scope],
             _ => throw new InvalidOperationException("This operation is not supported.")
         };
         var result = await Run(metadata.Tool, args, cancellationToken, ExecutionKind.Mutation);

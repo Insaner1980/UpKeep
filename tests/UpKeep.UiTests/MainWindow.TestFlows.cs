@@ -25,6 +25,11 @@ public sealed partial class MainWindow
         Check(!AppWindow.IsVisible, "The panel can be hidden.");
         ShowPanel();
         Check(AppWindow.IsVisible, "The panel can be restored.");
+        HideOnDeactivation();
+        TogglePanel();
+        Check(!AppWindow.IsVisible, "The tray click following deactivation does not reopen the panel.");
+        TogglePanel();
+        Check(AppWindow.IsVisible, "A subsequent tray click opens the panel.");
 
         discovery = new(new ToolLocator([scratch.Root]), new NoProcesses(), scratch.Root);
         var provider = new FixtureProvider();
@@ -70,6 +75,7 @@ public sealed partial class MainWindow
         Check(settings.Load().Settings.ProjectRoots.Count == 0, "Settings save only the fixture state.");
 
         await TestCleanupAsync(scratch);
+        await TestCleanupJournalFailureAsync(scratch);
         await TestBusyStatesAsync();
         await TestIndividualActionsAsync(scratch);
         var report = Environment.GetEnvironmentVariable("UPKEEP_UI_TEST_REPORT");
@@ -92,6 +98,14 @@ public sealed partial class MainWindow
         analysis = await analyzer.AnalyzeAsync(new([root]), new Progress<CleanupProgress>(), CancellationToken.None);
         projectFoldersConfigured = true;
         RenderCleanup();
+        Navigation.SelectedItem = Navigation.MenuItems[1];
+        CleanupList.UpdateLayout();
+        var origin = CleanupList.Items.OfType<Grid>().First().Children.OfType<Button>().Single();
+        ShowCategory(CleanupCategory.TemporaryFiles, origin);
+        CloseDetails();
+        var restored = CleanupList.Items.OfType<Grid>().First().Children.OfType<Button>().Single();
+        Check(!ReferenceEquals(origin, restored), "Cleanup rendering replaces the original category button.");
+        Check(ReferenceEquals(Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(Root.XamlRoot), restored), "Back restores focus to the rebuilt category button.");
         Check(analysis.Manifest.Read().Count() == 201, "All old fixture files are analyzed.");
         var group = analysis.Groups.Single();
         SelectGroup(group.Id, true);
@@ -117,6 +131,14 @@ public sealed partial class MainWindow
         selectedGroups.Add(group.Id);
         RefreshSelection();
         Check(CleanButton.IsEnabled, "A reviewed selection enables cleanup.");
+        var originalAnalysis = analysis;
+        var declinedCleanup = CleanSelected();
+        Check(busy && !AnalyzeButton.IsEnabled && !CheckButton.IsEnabled, "Cleanup locks scans before reading its manifest.");
+        await Analyze();
+        Check(ReferenceEquals(analysis, originalAnalysis), "A competing analysis cannot replace the reviewed manifest.");
+        await CompleteDialogAsync(false);
+        await declinedCleanup;
+        Check(!busy && AnalyzeButton.IsEnabled && analysis == originalAnalysis, "Declining cleanup restores idle state and preserves the analysis.");
         var cleanup = CleanSelected();
         await CompleteDialogAsync(true);
         await cleanup;
@@ -133,6 +155,55 @@ public sealed partial class MainWindow
             ShowCategory(category, AnalyzeButton);
             Check(detailsPanel is not null, "Every cleanup category has a details surface.");
             CloseDetails();
+        }
+    }
+
+    private async Task TestCleanupJournalFailureAsync(UpKeep.Tests.Scratch scratch)
+    {
+        var file = scratch.Write("journal-fixture/retained.tmp", "fixture");
+        var identity = PathGuard.Snapshot(file);
+        var manifest = new CleanupManifest(paths);
+        manifest.Append(new("fixture", "root", "retained.tmp", CleanupCategory.TestArtifacts, "fixture", identity.Length, identity,
+            Eligibility.Eligible, RemovalMethod.Recycle, "fixture", "group"));
+        manifest.Seal();
+        analysis = new(manifest, [new("root", Path.GetDirectoryName(file)!, RootKind.Project, CleanupCategory.TestArtifacts,
+            PathGuard.Snapshot(Path.GetDirectoryName(file)!))], [], []);
+        selectedFiles.Add("fixture");
+        var journalPath = Path.Combine(paths.Root, "last-operation.json");
+        executor = new(new JournalFailingRecycle(journalPath), journal, gate);
+        var previousManaged = managed;
+        scratch.Write("uv.exe", "");
+        managed = new(new(new ToolLocator([scratch.Root]), new CacheRunner(scratch.Root), scratch.Root), () => false);
+        actions = await managed.DiscoverAsync(CancellationToken.None);
+        selectedActions.Add(actions.Single().Id);
+        try
+        {
+            var cleanup = CleanSelected();
+            await CompleteDialogAsync(true);
+            await cleanup;
+            Check(analysis is null && !busy, "Journal failure still completes the cleanup workflow.");
+            Check(CleanupSummary.Text.Contains("could not be saved", StringComparison.Ordinal), "Journal failure is visible without hiding cleanup outcomes.");
+            var resultTexts = detailsPanel!.Children.OfType<ListView>().SelectMany(list => list.Items).OfType<TextBlock>().ToArray();
+            Check(resultTexts.Any(t => t.Text.Contains("Recycled:", StringComparison.Ordinal)), "Completed results remain available after the final journal write fails.");
+            Check(resultTexts.Any(t => t.Text.StartsWith("Failed:", StringComparison.Ordinal)), "A failed manager journal write is reported without discarding earlier file results.");
+            Check(File.Exists(file), "The fake recycler never deletes the fixture file.");
+            CloseDetails();
+        }
+        finally
+        {
+            Directory.Delete(journalPath);
+            executor = new(new UpKeep_App.Platform.RecycleBinService(), journal, gate);
+            managed = previousManaged;
+        }
+    }
+
+    private sealed class JournalFailingRecycle(string journalPath) : IRecycleBinService
+    {
+        public Task<IReadOnlyList<CleanupItemResult>> RecycleAsync(IReadOnlyList<ValidatedCleanupFile> files, CancellationToken cancellationToken)
+        {
+            File.Delete(journalPath);
+            Directory.CreateDirectory(journalPath);
+            return Task.FromResult<IReadOnlyList<CleanupItemResult>>(files.Select(f => new CleanupItemResult(f.Candidate.Id, "Recycled", f.Candidate.LogicalSize, "Fixture result")).ToArray());
         }
     }
 
@@ -205,9 +276,11 @@ public sealed partial class MainWindow
         updates = [provider.Item with { Kind = UpdateKind.RunUpdater, State = UpdateState.CheckUnavailable, Metadata = new(ManagerKind.Claude, new("fixture.exe", [], "fixture")) }];
         selectedUpdates.Add(updates[0].Key);
         var canceled = UpdateSelected();
+        Check(busy && !CheckButton.IsEnabled && !AnalyzeButton.IsEnabled, "Updater confirmation locks scans.");
         await CompleteDialogAsync(false);
         await canceled;
         Check(provider.Mutations == 0, "Declining updater confirmation starts no mutation.");
+        Check(!busy && CheckButton.IsEnabled, "Declining updater confirmation restores idle controls.");
         updates = [provider.Item];
         await RunItemAction(updates[0]);
         Check(provider.Mutations == 1, "An individual update action runs only its reviewed item.");
@@ -232,6 +305,19 @@ public sealed partial class MainWindow
         var approved = ReviewDistroTransactionsAsync([package]);
         await CompleteDialogAsync(true);
         Check(await approved, "An unchanged distro preview can be approved.");
+        runner.PendingPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        selectedUpdates.Clear();
+        selectedUpdates.Add(package.Key);
+        var pendingUpdate = UpdateSelected();
+        Check(busy && !CheckButton.IsEnabled && !AnalyzeButton.IsEnabled, "Distro preview locks scans before awaiting the runner.");
+        var originalUpdates = updates;
+        await CheckUpdates();
+        Check(ReferenceEquals(updates, originalUpdates), "A competing check cannot replace updates during preview.");
+        runner.PendingPreview.SetResult(new(0, "Fixture preview", ""));
+        await CompleteDialogAsync(false);
+        await pendingUpdate;
+        runner.PendingPreview = null;
+        Check(!busy && CheckButton.IsEnabled, "Declining a distro preview restores idle controls.");
         runner.FailPreview = true;
         Check(!await ReviewDistroTransactionsAsync([package]), "Failed previews cannot approve a transaction.");
 
@@ -325,6 +411,7 @@ public sealed partial class MainWindow
 
     private sealed class DistroRunner : IProcessRunner
     {
+        public TaskCompletionSource<ProcessResult>? PendingPreview { get; set; }
         public bool FailPreview
         {
             get; set;
@@ -334,6 +421,8 @@ public sealed partial class MainWindow
             if (request.Kind == ExecutionKind.Mutation)
                 throw new InvalidOperationException("This UI test only previews distro changes.");
             var preview = request.Arguments.Contains("--simulate");
+            if (preview && PendingPreview is not null)
+                return PendingPreview.Task;
             return Task.FromResult(new ProcessResult(preview && FailPreview ? 1 : 0,
                 preview ? "Inst fixture (2 fixture)" : request.Arguments.Contains("/usr/bin/apt")
                     ? "fixture/stable 2 amd64 [upgradable from: 1]" : "All snaps up to date", ""));

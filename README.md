@@ -10,6 +10,8 @@ dotnet build UpKeep.slnx -c Debug -p:Platform=x64
 dotnet test tests/UpKeep.Tests/UpKeep.Tests.csproj -c Debug
 ```
 
+The optional `tools/bc.ps1`, `db.ps1`, `dc.ps1`, `lc.ps1`, `ql.ps1`, `sc.ps1`, `ss.ps1`, and `tc.ps1` wrappers require the separate Windows-check checkout. By default they look for `Windows-check` beside this repository. Set `WINDOWS_CHECK_ROOT` to that checkout's directory when it is elsewhere. The direct `dotnet` commands above do not require Windows-check.
+
 Publish a portable, self-contained x64 folder and ZIP (app and helper together):
 
 ```powershell
@@ -26,7 +28,7 @@ Cleanup uses a per-file analysis manifest, checks identities again, and never re
 
 Runtime state is under `%LOCALAPPDATA%\UpKeep`: settings, one bounded operation summary, and owned temporary manifests. No diagnostic history, background polling, autostart registration, scheduled tasks, or notifications are installed.
 
-Verification status is recorded in `artifacts/tests/verification.md`. Development checks use isolated fixtures, including a native Recycle Bin test that restores its exact test file. The full test project also performs read-only manager/catalog queries; to omit network/installed-manager checks, use `--filter 'Category!=LiveReadOnly'`. No real installed software was updated, live cache pruned, or user AVD removed during implementation.
+Historical verification was recorded locally in `artifacts/tests/verification.md`. The ignored `artifacts/` directory and its reports are not included in this repository or a fresh checkout. Development checks use isolated fixtures, including a native Recycle Bin test that restores its exact test file. The full test project also performs read-only manager/catalog queries; to omit network/installed-manager checks, use `--filter 'Category!=LiveReadOnly'`. No real installed software was updated, live cache pruned, or user AVD removed during implementation.
 
 Protected system-temp removal is disabled pending validation of the real elevated helper handshake. Remaining interactive scaling, high-contrast, Narrator, Explorer-restart and published-app UI checks are unverified because Computer Use was stopped by the user. These limitations are not passing checks.
 

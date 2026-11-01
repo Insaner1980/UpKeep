@@ -6,36 +6,55 @@ namespace UpKeep.CleanupHost;
 
 internal static class ProtectedTempService
 {
-    public static IEnumerable<CleanupCandidate> Analyze(string rootId)
+    public static IEnumerable<CleanupCandidate> Analyze(string rootId, Action<string>? unavailable = null)
+        => AnalyzeRoot(rootId, CleanupProtocol.ResolveRoot(rootId), unavailable);
+
+    internal static IEnumerable<CleanupCandidate> AnalyzeRoot(string rootId, string path, Action<string>? unavailable)
     {
-        var path = CleanupProtocol.ResolveRoot(rootId);
         var pending = new Stack<string>();
         pending.Push(path);
         while (pending.TryPop(out var directory))
         {
-            if (File.GetAttributes(directory).HasFlag(FileAttributes.ReparsePoint))
+            FileSystemInfo[] entries;
+            try
             {
+                if (File.GetAttributes(directory).HasFlag(FileAttributes.ReparsePoint))
+                {
+                    continue;
+                }
+                entries = new DirectoryInfo(directory).GetFileSystemInfos();
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                unavailable?.Invoke(directory);
                 continue;
             }
 
-            foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+            foreach (var entry in entries)
             {
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                FileIdentity identity;
+                try
                 {
+                    if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    {
+                        continue;
+                    }
+                    if (entry is DirectoryInfo)
+                    {
+                        pending.Push(entry.FullName);
+                        continue;
+                    }
+                    if (entry.LastWriteTimeUtc > DateTime.UtcNow.AddDays(-7))
+                    {
+                        continue;
+                    }
+                    identity = PathGuard.Snapshot(entry.FullName);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+                {
+                    unavailable?.Invoke(entry.FullName);
                     continue;
                 }
-
-                if (entry is DirectoryInfo)
-                {
-                    pending.Push(entry.FullName);
-                    continue;
-                }
-                if (entry.LastWriteTimeUtc > DateTime.UtcNow.AddDays(-7))
-                {
-                    continue;
-                }
-
-                var identity = PathGuard.Snapshot(entry.FullName);
                 yield return new(Guid.NewGuid().ToString("N"), rootId, Path.GetRelativePath(path, entry.FullName), CleanupCategory.TemporaryFiles, "ProtectedTemp", identity.Length, identity, Eligibility.Eligible, RemovalMethod.Permanent, "Administrator access required; permanently removes this old temporary file.", rootId);
             }
         }

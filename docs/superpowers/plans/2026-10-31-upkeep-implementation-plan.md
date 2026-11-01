@@ -437,7 +437,7 @@ For currently observed manually installed tools such as TruffleHog, determine th
 - Do not compare all versions with `System.Version`. SemVer, PEP 440, Debian, NuGet, and vendor versions differ.
 - Let the owning manager determine whether a version is newer and which constraints apply.
 - Honor configured sources, release channels, package pins, architecture, installation scope, and environment.
-- Do not use `--force`, hash-check bypasses, prerelease opt-ins, broad uninstall flags, or automatic reboot flags.
+- Do not use `--force`, hash-check bypasses, prerelease opt-ins, broad uninstall flags, or automatic reboot flags. User-approved exception (2026-11-01): `code --install-extension <selected-id> --force` may update only the explicitly selected, already installed VS Code extension.
 - Do not automatically accept previously unseen source/package agreements.
 - Exclude credentials, source authorization headers, and registry tokens from displayed command details and exported diagnostics.
 

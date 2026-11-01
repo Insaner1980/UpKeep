@@ -29,6 +29,8 @@ public static partial class ElevationClient
         }
 
         Process? helper = null;
+        var all = new List<CleanupCandidate>();
+        var results = new List<CleanupItemResult>();
         try
         {
             helper = Process.Start(start) ?? throw new IOException("Cleanup helper did not start.");
@@ -40,8 +42,6 @@ public static partial class ElevationClient
                 throw new IOException("Cleanup helper identity mismatch.");
             }
 
-            var all = new List<CleanupCandidate>();
-            var results = new List<CleanupItemResult>();
             var batches = action == ProtectedAction.Analyze ? new[] { Array.Empty<CleanupCandidate>() } : candidates.Chunk(500).ToArray();
             foreach (var batch in batches)
             {
@@ -52,16 +52,16 @@ public static partial class ElevationClient
                     response = await CleanupProtocol.ReadAsync<ProtectedTempResult>(server, token);
                     all.AddRange(response.Candidates);
                     results.AddRange(response.Results);
-                    if (response.State is "Blocked" or "Failed")
+                    if (response.State is "Blocked" or "Failed" or "Partial")
                     {
-                        return response;
+                        return response with { Candidates = all, Results = results };
                     }
                 } while (!response.Last);
             }
             return new("Completed", all, results, "Protected temporary operation finished.");
         }
         catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 1223) { return new("Canceled", [], [], "Administrator request was canceled."); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or OperationCanceledException) { return new("Blocked", [], [], e.Message); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or OperationCanceledException) { return new("Blocked", all, results, e.Message); }
         finally
         {
             await server.DisposeAsync();

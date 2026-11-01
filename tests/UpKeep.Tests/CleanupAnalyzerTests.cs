@@ -10,6 +10,30 @@ namespace UpKeep.Tests;
 
 public class CleanupAnalyzerTests
 {
+    [Theory]
+    [InlineData("src", "Debug")]
+    [InlineData("tests", "Release")]
+    public async Task GeneratedOutputUnderSourceTreesRemainsEligibleWithNestedProtections(string parent, string configuration)
+    {
+        using var scratch = new Scratch();
+        scratch.Write("tools/git.exe", "");
+        scratch.Write("project/.git/HEAD", "");
+        var project = $"project/{parent}/App";
+        scratch.Write(project + "/App.csproj", "");
+        scratch.Write(project + $"/bin/{configuration}/app.dll", "");
+        scratch.Write(project + $"/bin/{configuration}/tests/retained.dll", "");
+        scratch.Write(project + $"/bin/{configuration}/auth.json", "");
+        scratch.Write("project/secrets/App/App.csproj", "");
+        scratch.Write("project/secrets/App/bin/Debug/private.dll", "");
+        var context = new DiscoveryContext(new ToolLocator([Path.Combine(scratch.Root, "tools")]), new GitRunner(), scratch.Root);
+        using var result = await new CleanupAnalyzer(new(Path.Combine(scratch.Root, "state")), context).AnalyzeAsync(
+            new([new("project", Path.Combine(scratch.Root, "project"), RootKind.Project, CleanupCategory.TestArtifacts)]),
+            new Progress<CleanupProgress>(), TestContext.Current.CancellationToken);
+        var candidate = Assert.Single(result.Manifest.Read());
+        Assert.EndsWith("app.dll", candidate.RelativePath);
+        Assert.Equal(Eligibility.Eligible, candidate.Eligibility);
+    }
+
     [Fact]
     public async Task InaccessibleSubdirectoryIsReportedWithoutLosingReadableSiblings()
     {
@@ -53,7 +77,8 @@ public class CleanupAnalyzerTests
         scratch.Write("project/artifacts/run-b/report.html", "");
         scratch.Write("project/artifacts/run-a/auth.json", "");
         scratch.Write("project/artifacts/run-a/tests/example.cs", "");
-        var context = new DiscoveryContext(new ToolLocator(), new GitRunner(), scratch.Root);
+        scratch.Write("tools/git.exe", "");
+        var context = new DiscoveryContext(new ToolLocator([Path.Combine(scratch.Root, "tools")]), new GitRunner(), scratch.Root);
         using var result = await new CleanupAnalyzer(new(Path.Combine(scratch.Root, "state")), context).AnalyzeAsync(new([new("project", Path.Combine(scratch.Root, "project"), RootKind.Project, CleanupCategory.TestArtifacts)]), new Progress<CleanupProgress>(), TestContext.Current.CancellationToken);
         Assert.Equal(2, result.Groups.Count);
         Assert.Equal(2, result.Manifest.Read().Count());

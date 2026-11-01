@@ -30,7 +30,7 @@ public sealed partial class WslDistroProvider(string distro) : IUpdateProvider
                 throw new InvalidDataException("Unrecognized APT result. Package indexes were not refreshed automatically.");
             }
 
-            result.Add(new(m.Groups[1].Value, m.Groups[3].Value, m.Groups[2].Value));
+            result.Add(new(m.Groups[1].Value + ":" + m.Groups[3].Value, m.Groups[4].Value, m.Groups[2].Value));
         }
         return result;
     }
@@ -113,7 +113,7 @@ public sealed partial class WslDistroProvider(string distro) : IUpdateProvider
         return new(version == request.TargetVersion, version);
     }
 
-    [GeneratedRegex(@"^([a-z0-9][a-z0-9+.-]*)/\S+ (\S+) \S+ \[upgradable from: (\S+)\]$", RegexOptions.None, 1000)]
+    [GeneratedRegex(@"^([a-z0-9][a-z0-9+.-]*)/\S+ (\S+) ([a-z0-9][a-z0-9-]*) \[upgradable from: (\S+)\]$", RegexOptions.None, 1000)]
     private static partial Regex AptPackageRegex();
     [GeneratedRegex(@"\s+", RegexOptions.None, 1000)]
     private static partial Regex WhitespaceRegex();

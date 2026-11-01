@@ -41,7 +41,7 @@ internal static class Program
                 ProtectedTempRequest request;
                 try
                 {
-                    request = await CleanupProtocol.ReadAsync<ProtectedTempRequest>(pipe, deadline.Token);
+                    request = await CleanupProtocol.ReadAsync<ProtectedTempRequest>(pipe, CancellationToken.None);
                 }
                 catch (EndOfStreamException) { break; }
                 CleanupProtocol.Validate(request, args[1], parentId, parentTicks);
@@ -50,7 +50,7 @@ internal static class Program
                     return 6;
                 }
 
-                await ExecuteRequestAsync(pipe, request, deadline.Token);
+                await ExecuteRequestAsync(pipe, request, CancellationToken.None);
             }
             return 0;
         }
@@ -61,12 +61,14 @@ internal static class Program
     {
         if (request.Action == ProtectedAction.Analyze)
         {
-            foreach (var batch in ProtectedTempService.Analyze(request.RootId).Chunk(500))
+            int unavailable = 0;
+            foreach (var batch in ProtectedTempService.Analyze(request.RootId, _ => unavailable++).Chunk(500))
             {
                 await CleanupProtocol.WriteAsync(pipe, new ProtectedTempResult("Analyzing", batch, [], "", false), token);
             }
 
-            await CleanupProtocol.WriteAsync(pipe, new ProtectedTempResult("Completed", [], [], "Protected temporary analysis completed."), token);
+            await CleanupProtocol.WriteAsync(pipe, new ProtectedTempResult(unavailable == 0 ? "Completed" : "Partial", [], [],
+                unavailable == 0 ? "Protected temporary analysis completed." : $"Partial analysis: {unavailable} inaccessible entries were skipped."), token);
         }
         else
         {

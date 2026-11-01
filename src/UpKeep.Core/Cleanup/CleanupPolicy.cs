@@ -4,14 +4,18 @@ namespace UpKeep.Core.Cleanup;
 
 public static class CleanupPolicy
 {
+    private static readonly HashSet<string> SourceDirectoryParts = new(StringComparer.OrdinalIgnoreCase) { "src", "tests", "test", "androidTest" };
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase) { ".cs", ".kt", ".kts", ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".ps1", ".sh", ".cmd", ".bat", ".md", ".json", ".yaml", ".yml", ".toml", ".ini", ".config", ".cfg", ".properties", ".gradle", ".csproj", ".sln", ".slnx", ".xml", ".c", ".h", ".cpp", ".hpp", ".go", ".rs", ".sql" };
     private static readonly HashSet<string> ProtectedParts = new(StringComparer.OrdinalIgnoreCase) { ".git", "src", "tests", "test", "androidTest", "sessions", "memories", "memories_v2", "worktrees", "attachments", "generated_images", "visualizations", "plugins", "skills", "rules", "secrets", "sandbox", "node_modules" };
-    public static (Eligibility Eligibility, RemovalMethod Method, string Reason) Classify(CleanupRoot root, string relative, DateTime lastWriteUtc, DateTime nowUtc, bool tracked, bool generated)
+    public static (Eligibility Eligibility, RemovalMethod Method, string Reason) Classify(CleanupRoot root, string relative, DateTime lastWriteUtc, DateTime nowUtc, bool tracked, bool generated, string? outputRelative = null)
     {
         var parts = relative.Split(['\\', '/'], StringSplitOptions.None);
         var name = Path.GetFileName(relative).ToLowerInvariant();
         var extension = Path.GetExtension(name);
-        if (IsProtected(parts, name, extension, tracked))
+        var protectedParts = root.Kind == RootKind.Project && generated && outputRelative is not null
+            ? parts.Where(p => !SourceDirectoryParts.Contains(p))
+                .Concat(outputRelative.Split(['\\', '/'], StringSplitOptions.None)).ToArray() : parts;
+        if (IsProtected(protectedParts, name, extension, tracked))
         {
             return (Eligibility.Protected, RemovalMethod.None, "Source, credentials, tracked content, or persistent application data.");
         }
@@ -62,5 +66,8 @@ public static class CleanupPolicy
 
         return (Eligibility.Protected, RemovalMethod.None, "Recent log or persistent state.");
     }
-    private static bool IsRetainedArtifact(string[] parts) => parts.Any(p => p.Contains("release", StringComparison.OrdinalIgnoreCase) || p.Contains("signed", StringComparison.OrdinalIgnoreCase) || p.Contains("evidence", StringComparison.OrdinalIgnoreCase) || p.Contains("backup", StringComparison.OrdinalIgnoreCase));
+    private static bool IsRetainedArtifact(string[] parts) => parts.Where((part, index) =>
+        !(part.Equals("Release", StringComparison.OrdinalIgnoreCase) && index > 0 &&
+          (parts[index - 1].Equals("bin", StringComparison.OrdinalIgnoreCase) || parts[index - 1].Equals("obj", StringComparison.OrdinalIgnoreCase))))
+        .Any(p => p.Contains("release", StringComparison.OrdinalIgnoreCase) || p.Contains("signed", StringComparison.OrdinalIgnoreCase) || p.Contains("evidence", StringComparison.OrdinalIgnoreCase) || p.Contains("backup", StringComparison.OrdinalIgnoreCase));
 }

@@ -2,13 +2,15 @@ namespace UpKeep.Tests;
 
 internal sealed partial class Scratch : IDisposable
 {
+    private readonly string workspace;
+    private readonly string scratchDirectory;
     public string Root
     {
         get;
     }
-    public Scratch()
+    public Scratch(string? startDirectory = null)
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        var directory = new DirectoryInfo(startDirectory ?? AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "UpKeep.slnx")))
         {
             directory = directory.Parent;
@@ -19,7 +21,9 @@ internal sealed partial class Scratch : IDisposable
             throw new InvalidOperationException("Test workspace not found.");
         }
 
-        Root = Path.Combine(directory.FullName, "artifacts", "scratch", Guid.NewGuid().ToString("N"));
+        workspace = directory.FullName;
+        scratchDirectory = Path.Combine(workspace, "artifacts", "scratch");
+        Root = Path.Combine(scratchDirectory, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Root);
     }
     public string Write(string name, string value)
@@ -32,11 +36,22 @@ internal sealed partial class Scratch : IDisposable
     public void Dispose()
     {
         var resolved = Path.GetFullPath(Root);
-        if (!resolved.Contains(Path.Combine("UpKeep", "artifacts", "scratch") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(Path.GetDirectoryName(resolved), scratchDirectory, StringComparison.OrdinalIgnoreCase) ||
+            !Guid.TryParseExact(Path.GetFileName(resolved), "N", out _))
         {
             throw new InvalidOperationException("Unsafe test cleanup.");
         }
-
+        for (var directory = new DirectoryInfo(resolved); directory is not null; directory = directory.Parent)
+        {
+            if (directory.Exists && directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new InvalidOperationException("Reparse points are not allowed in the fixture cleanup path.");
+            }
+            if (string.Equals(directory.FullName, workspace, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+        }
         DeleteTree(new DirectoryInfo(resolved));
     }
     private static void DeleteTree(DirectoryInfo directory)

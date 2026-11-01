@@ -67,6 +67,8 @@ Use these local sources together:
 | [Provider coverage report](artifacts/tests/provider-coverage.json) | Machine-specific output from the historical command-provider integration check |
 | This file | Consolidated context, checked against source on the date above |
 
+Reports referenced under `artifacts/` are historical local evidence. That directory is ignored by Git; these reports are unavailable in a fresh checkout. Their links describe the original local evidence locations, not files shipped in the repository.
+
 Interpret the information carefully:
 
 - **Current implementation** means the behavior is present in the inspected source. It does not automatically mean its real UI or mutation path has been exercised.
@@ -477,8 +479,8 @@ Global host discovery lists distributions without entering them. **Check distro*
 | Operation | Current behavior |
 |---|---|
 | APT check | `/usr/bin/apt list --upgradable`; uses existing indexes, whose freshness is unknown |
-| APT preview | `apt-get --simulate install --only-upgrade --no-remove <id>=<target>` |
-| APT mutation | Noninteractive sudo, `apt-get install --only-upgrade --no-remove -y <id>=<target>` |
+| APT preview | `apt-get --simulate install --only-upgrade --no-remove <id>:<architecture>=<target>` |
+| APT mutation | Noninteractive sudo, `apt-get install --only-upgrade --no-remove -y <id>:<architecture>=<target>` |
 | APT verification | `dpkg-query` reads the installed version and compares the target |
 | Snap check | `snap refresh --list`; captures target version/revision |
 | Snap preview | Explains the selected snap refresh and retention of its configured channel |
@@ -567,6 +569,8 @@ Protection includes `.git`, source/test trees, Codex sessions/memories/worktrees
 
 Generated directories may legitimately contain source-like or JSON output, so the policy is contextual. Do not summarize it as “all files with a source extension are always protected everywhere.” Conversely, old age under a temporary directory must not bypass the explicit source/configuration protection.
 
+For recognized generated output, source/test directory names above the output directory do not block cleanup; matching directories inside the output remain protected. Credential and persistent-data directory protections still apply to the entire path. A `Release` build configuration directly under `bin` or `obj` is ordinary generated output; release-named files and signed/evidence/backup artifact sets still require review.
+
 ### 8.5 Analysis manifest lifecycle
 
 Each analysis creates `%LOCALAPPDATA%\UpKeep\Temp\<session-id>` with `owner.json` and `cleanup-manifest.jsonl`. Candidates are appended during discovery; sealing closes the writer and retains a read-only lease. Execution iterates that manifest, not a fresh recursive deletion of the selected root.
@@ -598,7 +602,7 @@ Changed, inaccessible, or locked targets are skipped. A new file created after a
 
 Permanent removal uses `SetFileInformationByHandle` on the validated handle. Selected project roots are not recursively deleted. The app does not change ACLs or kill another application to make removal succeed.
 
-Progress reporting is throttled to roughly 200-ms intervals during traversal/execution. Result counts are updated incrementally rather than repeatedly recounting a growing result collection for every file. The journal is still written at defined operation boundaries, including before individual removal work.
+Progress reporting is throttled to roughly 200-ms intervals during traversal/execution. Result counts are updated incrementally rather than repeatedly recounting a growing result collection for every file. The cleanup journal is written at operation boundaries and throttled checkpoints. A failed checkpoint stops queued removals while preserving accumulated results.
 
 ### 9.2 Recycle Bin semantics
 
@@ -706,7 +710,7 @@ Current client/helper checks include:
 - Messages use a four-byte length prefix and JSON, with a maximum body size of 1,048,576 bytes.
 - Validation caps request candidates at 1,000; client/helper batching uses groups of 500 where applicable.
 - Candidate validation requires the selected fixed root, relative paths, permanent method, and `ProtectedTemp` rule ID.
-- The helper uses a 40-second deadline for its pipe loop; the client has a 45-second connection deadline and a bounded five-second exit wait after disconnection. These are not a claim of a single universal operation timeout.
+- The helper uses a 40-second connection deadline; subsequent requests rely on parent checks and pipe disconnection instead of a session-wide deadline. The client has a 45-second connection deadline and a bounded five-second exit wait after disconnection. Interrupted batches preserve previously received results. Inaccessible analysis entries are skipped and reported as a partial result.
 
 **Current product boundary:** the UI exposes only analysis of `WindowsTemp`. It displays an explicit message that protected removal is not enabled until the real elevated handshake has been verified in an authorized Windows test session. The helper and protocol contain removal code, but that is not an enabled, validated user-facing deletion feature.
 

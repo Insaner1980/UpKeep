@@ -7,6 +7,29 @@ namespace UpKeep.Tests;
 
 public class WslProviderTests
 {
+    [Fact]
+    public async Task MultiarchPackagesHaveDistinctTransactionsAndVerification()
+    {
+        using var scratch = new Scratch();
+        scratch.Write("wsl.exe", "");
+        var runner = new Runner(r => new(0, r.Arguments.Contains("/usr/bin/apt")
+            ? "libc6/stable 2 amd64 [upgradable from: 1]\nlibc6/stable 2 i386 [upgradable from: 1]"
+            : r.Arguments.Contains("--list") ? "All snaps up to date" : "2", ""));
+        var provider = new WslDistroProvider("FixtureOnly");
+        var inventory = await provider.CheckAsync(new(new ToolLocator([scratch.Root]), runner, scratch.Root), TestContext.Current.CancellationToken);
+        Assert.True(inventory.Complete);
+        Assert.Equal(2, inventory.Items.Select(i => i.Key).Distinct().Count());
+        foreach (var item in inventory.Items)
+        {
+            provider.ApprovePreview(item, await provider.PreviewAsync(item, TestContext.Current.CancellationToken));
+            Assert.Equal(UpdateState.CompletedUnverified, (await provider.UpdateAsync(item.Request(), new Progress<OperationProgress>(), TestContext.Current.CancellationToken)).State);
+            Assert.True((await provider.VerifyAsync(item.Request(), TestContext.Current.CancellationToken)).Verified);
+            Assert.Contains(runner.Requests, r => r.Arguments.Contains("--simulate") && r.Arguments.Contains(item.Key.PackageId + "=2"));
+            Assert.Contains(runner.Requests, r => r.Kind == ExecutionKind.Mutation && r.Arguments.Contains(item.Key.PackageId + "=2"));
+            Assert.Contains(runner.Requests, r => r.Arguments.Contains("/usr/bin/dpkg-query") && r.Arguments.Contains(item.Key.PackageId));
+        }
+    }
+
     private sealed class Runner(Func<ProcessRequest, ProcessResult> respond) : IProcessRunner
     {
         public List<ProcessRequest> Requests { get; } = [];
@@ -50,7 +73,7 @@ public class WslProviderTests
         Assert.Equal(exitCode == 0 ? UpdateState.CompletedUnverified : UpdateState.NeedsInteraction, result.State);
         var mutation = Assert.Single(runner.Requests, r => r.Kind == ExecutionKind.Mutation);
         Assert.Contains("FixtureOnly", mutation.Arguments);
-        Assert.Contains(snap ? "--revision=42" : "fixture=2", mutation.Arguments);
+        Assert.Contains(snap ? "--revision=42" : "fixture:amd64=2", mutation.Arguments);
         Assert.DoesNotContain("upgrade", mutation.Arguments);
         Assert.True((await provider.VerifyAsync(item.Request(), TestContext.Current.CancellationToken)).Verified);
         Assert.Equal(UpdateState.Blocked, (await provider.UpdateAsync(item.Request(), new Progress<OperationProgress>(), TestContext.Current.CancellationToken)).State);
