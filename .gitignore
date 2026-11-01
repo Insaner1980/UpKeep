@@ -1,0 +1,8 @@
+artifacts/
+reports/
+.sonarqube/
+.vs/
+**/bin/
+**/obj/
+*.user
+.superpowers/

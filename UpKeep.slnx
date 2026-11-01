@@ -1,0 +1,17 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <ProjectType Extension=".csproj" BasedOn=".csproj">
+      <Platform Project="x64" />
+    </ProjectType>
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/UpKeep.App/UpKeep.App.csproj" />
+    <Project Path="src/UpKeep.CleanupHost/UpKeep.CleanupHost.csproj" />
+    <Project Path="src/UpKeep.Core/UpKeep.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/UpKeep.Tests/UpKeep.Tests.csproj" />
+    <Project Path="tests/UpKeep.UiTests/UpKeep.UiTests.csproj" />
+  </Folder>
+</Solution>

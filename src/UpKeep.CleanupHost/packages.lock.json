@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows10.0.26100": {
+      "Microsoft.WindowsPackageManager.ComInterop": {
+        "type": "Transitive",
+        "resolved": "1.29.380",
+        "contentHash": "O2KWbqShmCi9KZgmweDo2DxPFDskM8IDtXkhnVt1d/lNL22eBqPAM69YobFLbMUB+cdTQrApQJx+qhQRXkiltw=="
+      },
+      "upkeep.core": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.WindowsPackageManager.ComInterop": "[1.29.380, )"
+        }
+      }
+    },
+    "net10.0-windows10.0.26100/win-x64": {}
+  }
+}
