@@ -569,7 +569,7 @@ Protection includes `.git`, source/test trees, Codex sessions/memories/worktrees
 
 Generated directories may legitimately contain source-like or JSON output, so the policy is contextual. Do not summarize it as “all files with a source extension are always protected everywhere.” Conversely, old age under a temporary directory must not bypass the explicit source/configuration protection.
 
-For recognized generated output, source/test directory names above the output directory do not block cleanup; matching directories inside the output remain protected. Credential and persistent-data directory protections still apply to the entire path. A `Release` build configuration directly under `bin` or `obj` is ordinary generated output; release-named files and signed/evidence/backup artifact sets still require review.
+For recognized generated output and review directories, source/test directory names above the output directory do not block cleanup; matching directories inside the output remain protected. Reports and other non-generated artifacts still require individual review, and source/configuration files inside them remain protected. Credential and persistent-data directory protections still apply to the entire path. A `Release` build configuration directly under `bin` or `obj` is ordinary generated output; release-named files and signed/evidence/backup artifact sets still require review.
 
 ### 8.5 Analysis manifest lifecycle
 

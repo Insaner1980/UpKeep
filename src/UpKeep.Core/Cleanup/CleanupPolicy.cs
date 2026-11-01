@@ -12,7 +12,7 @@ public static class CleanupPolicy
         var parts = relative.Split(['\\', '/'], StringSplitOptions.None);
         var name = Path.GetFileName(relative).ToLowerInvariant();
         var extension = Path.GetExtension(name);
-        var protectedParts = root.Kind == RootKind.Project && generated && outputRelative is not null
+        var protectedParts = root.Kind == RootKind.Project && outputRelative is not null
             ? parts.Where(p => !SourceDirectoryParts.Contains(p))
                 .Concat(outputRelative.Split(['\\', '/'], StringSplitOptions.None)).ToArray() : parts;
         if (IsProtected(protectedParts, name, extension, tracked))

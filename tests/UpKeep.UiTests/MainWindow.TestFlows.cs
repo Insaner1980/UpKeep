@@ -75,7 +75,8 @@ public sealed partial class MainWindow
         Check(settings.Load().Settings.ProjectRoots.Count == 0, "Settings save only the fixture state.");
 
         await TestCleanupAsync(scratch);
-        await TestCleanupJournalFailureAsync(scratch);
+        await TestCleanupFailureAsync(scratch, journalFailure: true);
+        await TestCleanupFailureAsync(scratch, journalFailure: false);
         await TestBusyStatesAsync();
         await TestIndividualActionsAsync(scratch);
         var report = Environment.GetEnvironmentVariable("UPKEEP_UI_TEST_REPORT");
@@ -158,7 +159,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task TestCleanupJournalFailureAsync(UpKeep.Tests.Scratch scratch)
+    private async Task TestCleanupFailureAsync(UpKeep.Tests.Scratch scratch, bool journalFailure)
     {
         var file = scratch.Write("journal-fixture/retained.tmp", "fixture");
         var identity = PathGuard.Snapshot(file);
@@ -170,10 +171,10 @@ public sealed partial class MainWindow
             PathGuard.Snapshot(Path.GetDirectoryName(file)!))], [], []);
         selectedFiles.Add("fixture");
         var journalPath = Path.Combine(paths.Root, "last-operation.json");
-        executor = new(new JournalFailingRecycle(journalPath), journal, gate);
+        executor = new(new FixtureRecycle(journalFailure ? journalPath : null), journal, gate);
         var previousManaged = managed;
         scratch.Write("uv.exe", "");
-        managed = new(new(new ToolLocator([scratch.Root]), new CacheRunner(scratch.Root), scratch.Root), () => false);
+        managed = new(new(new ToolLocator([scratch.Root]), new CacheRunner(scratch.Root, throwOnMutation: !journalFailure), scratch.Root), () => false);
         actions = await managed.DiscoverAsync(CancellationToken.None);
         selectedActions.Add(actions.Single().Id);
         try
@@ -181,28 +182,36 @@ public sealed partial class MainWindow
             var cleanup = CleanSelected();
             await CompleteDialogAsync(true);
             await cleanup;
-            Check(analysis is null && !busy, "Journal failure still completes the cleanup workflow.");
-            Check(CleanupSummary.Text.Contains("could not be saved", StringComparison.Ordinal), "Journal failure is visible without hiding cleanup outcomes.");
+            Check(analysis is null && !busy && !gate.IsBusy, "A cleanup failure still releases the operation and its manifest.");
+            Check(selectedFiles.Count == 0 && selectedActions.Count == 0, "A cleanup failure clears the completed selection.");
+            if (journalFailure)
+                Check(CleanupSummary.Text.Contains("could not be saved", StringComparison.Ordinal), "Journal failure is visible without hiding cleanup outcomes.");
             var resultTexts = detailsPanel!.Children.OfType<ListView>().SelectMany(list => list.Items).OfType<TextBlock>().ToArray();
-            Check(resultTexts.Any(t => t.Text.Contains("Recycled:", StringComparison.Ordinal)), "Completed results remain available after the final journal write fails.");
-            Check(resultTexts.Any(t => t.Text.StartsWith("Failed:", StringComparison.Ordinal)), "A failed manager journal write is reported without discarding earlier file results.");
+            Check(resultTexts.Any(t => t.Text.Contains("Recycled:", StringComparison.Ordinal)), "Earlier file results remain available after a later failure.");
+            Check(resultTexts.Any(t => t.Text.StartsWith("Failed:", StringComparison.Ordinal)), "The manager action failure is reported alongside earlier results.");
+            if (!journalFailure)
+                Check(resultTexts.Any(t => t.Text.Contains("Fixture manager exception", StringComparison.Ordinal)), "Unexpected manager exceptions are retained in the results.");
             Check(File.Exists(file), "The fake recycler never deletes the fixture file.");
             CloseDetails();
         }
         finally
         {
-            Directory.Delete(journalPath);
+            if (journalFailure)
+                Directory.Delete(journalPath);
             executor = new(new UpKeep_App.Platform.RecycleBinService(), journal, gate);
             managed = previousManaged;
         }
     }
 
-    private sealed class JournalFailingRecycle(string journalPath) : IRecycleBinService
+    private sealed class FixtureRecycle(string? journalPath) : IRecycleBinService
     {
         public Task<IReadOnlyList<CleanupItemResult>> RecycleAsync(IReadOnlyList<ValidatedCleanupFile> files, CancellationToken cancellationToken)
         {
-            File.Delete(journalPath);
-            Directory.CreateDirectory(journalPath);
+            if (journalPath is not null)
+            {
+                File.Delete(journalPath);
+                Directory.CreateDirectory(journalPath);
+            }
             return Task.FromResult<IReadOnlyList<CleanupItemResult>>(files.Select(f => new CleanupItemResult(f.Candidate.Id, "Recycled", f.Candidate.LogicalSize, "Fixture result")).ToArray());
         }
     }
@@ -429,10 +438,12 @@ public sealed partial class MainWindow
         }
     }
 
-    private sealed class CacheRunner(string root) : IProcessRunner
+    private sealed class CacheRunner(string root, bool throwOnMutation = false) : IProcessRunner
     {
         public Task<ProcessResult> RunAsync(ProcessRequest request, IProgress<ProcessOutput>? output, CancellationToken cancellationToken)
-            => Task.FromResult(new ProcessResult(0, root, ""));
+            => request.Kind == ExecutionKind.Mutation && throwOnMutation
+                ? throw new InvalidOperationException("Fixture manager exception")
+                : Task.FromResult(new ProcessResult(0, root, ""));
     }
 
     private sealed class FixtureProvider : IUpdateProvider

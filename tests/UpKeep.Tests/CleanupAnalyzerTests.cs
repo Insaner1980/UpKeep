@@ -11,6 +11,35 @@ namespace UpKeep.Tests;
 public class CleanupAnalyzerTests
 {
     [Theory]
+    [InlineData("src")]
+    [InlineData("tests")]
+    public async Task ReportsUnderSourceTreesRemainReviewableWithoutExposingProtectedContent(string parent)
+    {
+        using var scratch = new Scratch();
+        scratch.Write("tools/git.exe", "");
+        scratch.Write("project/.git/HEAD", "");
+        var project = $"project/{parent}/App";
+        scratch.Write(project + "/App.csproj", "");
+        var output = project + "/reports/run";
+        scratch.Write(output + "/report.html", "");
+        scratch.Write(output + "/tracked.html", "");
+        scratch.Write(output + "/example.cs", "");
+        scratch.Write(output + "/auth.json", "");
+        scratch.Write(output + "/tests/retained.html", "");
+        scratch.Write("project/secrets/App/App.csproj", "");
+        scratch.Write("project/secrets/App/reports/run/private.html", "");
+        var context = new DiscoveryContext(new ToolLocator([Path.Combine(scratch.Root, "tools")]),
+            new GitRunner($"{parent}/App/reports/run/tracked.html\0"), scratch.Root);
+        using var result = await new CleanupAnalyzer(new(Path.Combine(scratch.Root, "state")), context).AnalyzeAsync(
+            new([new("project", Path.Combine(scratch.Root, "project"), RootKind.Project, CleanupCategory.TestArtifacts)]),
+            new Progress<CleanupProgress>(), TestContext.Current.CancellationToken);
+        var candidate = Assert.Single(result.Manifest.Read());
+        Assert.EndsWith("report.html", candidate.RelativePath);
+        Assert.Equal(Eligibility.ReviewRequired, candidate.Eligibility);
+        Assert.Equal(RemovalMethod.Recycle, candidate.Method);
+    }
+
+    [Theory]
     [InlineData("src", "Debug")]
     [InlineData("tests", "Release")]
     public async Task GeneratedOutputUnderSourceTreesRemainsEligibleWithNestedProtections(string parent, string configuration)
@@ -62,9 +91,9 @@ public class CleanupAnalyzerTests
             blocked.SetAccessControl(restored);
         }
     }
-    private sealed class GitRunner : IProcessRunner
+    private sealed class GitRunner(string tracked = "artifacts/run-a/tracked.txt\0") : IProcessRunner
     {
-        public Task<ProcessResult> RunAsync(ProcessRequest request, IProgress<ProcessOutput>? output, CancellationToken token) => Task.FromResult(new ProcessResult(0, "artifacts/run-a/tracked.txt\0", ""));
+        public Task<ProcessResult> RunAsync(ProcessRequest request, IProgress<ProcessOutput>? output, CancellationToken token) => Task.FromResult(new ProcessResult(0, tracked, ""));
     }
     [Fact]
     public async Task ProjectArtifactSetsAreSeparateAndProtectedFilesAreExcluded()

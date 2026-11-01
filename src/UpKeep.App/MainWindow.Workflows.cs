@@ -527,7 +527,18 @@ public sealed partial class MainWindow
 
             list.Items.Add(Text("Protected removal is not enabled until the elevated handshake has been verified in an authorized Windows test session."));
         }
-        catch (System.ComponentModel.Win32Exception error) { CleanupSummary.Text = "Could not start protected analysis: " + error.Message; }
+        catch (System.ComponentModel.Win32Exception error)
+        {
+            var message = "Could not start protected analysis: " + error.Message;
+            if (detailsPanel?.Children.OfType<ListView>().FirstOrDefault() is { } list)
+            {
+                list.Items.Add(Text(message));
+            }
+            else
+            {
+                CleanupSummary.Text = message;
+            }
+        }
         finally { SetBusy(false); dialogOpen = false; }
     }
     private async Task<bool> Confirm(string title, string message, string primary)
@@ -763,7 +774,7 @@ public sealed partial class MainWindow
                         });
                     }
                     catch (OperationCanceledException) { items.Add(new(action.Id, CanceledMessage, 0, action.Name + ": Canceled before starting.")); }
-                    catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                    catch (Exception error)
                     {
                         items.Add(new(action.Id, "Failed", 0, action.Name + ": " + error.Message));
                         await workCancellation!.CancelAsync();
