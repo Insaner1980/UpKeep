@@ -109,12 +109,16 @@ public class ManagedActionsTests
     [InlineData("replaced", "Skipped")]
     [InlineData("root-changed", "Skipped")]
     [InlineData("stop-after-current", "Completed")]
+    [InlineData("config-changed", "Skipped")]
+    [InlineData("config-changed-during-recheck", "Skipped")]
+    [InlineData("config-missing", "Skipped")]
     public async Task EmulatorRemovalRechecksOwnershipAndResult(string scenario, string state)
     {
         using var scratch = new Scratch();
         scratch.Write("android.exe", "");
         var avdRoot = scratch.Root;
         Directory.CreateDirectory(Path.Combine(avdRoot, "FixtureDevice.avd"));
+        scratch.Write("FixtureDevice.ini", "path=" + Path.Combine(avdRoot, "FixtureDevice.avd"));
         using var stop = new CancellationTokenSource();
         bool analyzed = false, removed = false;
         var runner = new Runner(r =>
@@ -126,6 +130,8 @@ public class ManagedActionsTests
                     stop.Cancel();
                 return new(scenario == "failure" ? 1 : 0, "", "");
             }
+            if (analyzed && scenario == "config-changed-during-recheck")
+                scratch.Write("FixtureDevice.ini", "path=" + Path.Combine(avdRoot, "other.avd"));
             return new(0, (analyzed && scenario == "changed") || (removed && scenario != "remains") ? "" : "FixtureDevice\n../invalid", "");
         });
         var service = new ManagedActions(new(new ToolLocator([scratch.Root]), runner, scratch.Root), () => analyzed && scenario == "running", () => avdRoot);
@@ -138,8 +144,48 @@ public class ManagedActionsTests
         }
         if (scenario == "root-changed")
             avdRoot = Path.Combine(scratch.Root, "changed-root");
+        if (scenario == "config-changed")
+            scratch.Write("FixtureDevice.ini", "path=" + Path.Combine(avdRoot, "other.avd"));
+        if (scenario == "config-missing")
+            File.Delete(Path.Combine(avdRoot, "FixtureDevice.ini"));
         Assert.Equal(state, (await service.ExecuteAsync(action, stop.Token)).State);
         Assert.Equal(state != "Skipped", removed);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("different")]
+    [InlineData("relative")]
+    [InlineData("duplicate")]
+    [InlineData("redirected")]
+    public async Task UnverifiedAvdConfigurationCannotEnableRemoval(string scenario)
+    {
+        using var scratch = new Scratch();
+        scratch.Write("android.exe", "");
+        var location = Path.Combine(scratch.Root, "FixtureDevice.avd");
+        Directory.CreateDirectory(location);
+        var other = Path.Combine(scratch.Root, "other.avd");
+        Directory.CreateDirectory(other);
+        if (scenario != "missing")
+        {
+            var content = scenario switch
+            {
+                "different" => "path=" + other,
+                "relative" => "path=FixtureDevice.avd",
+                "duplicate" => "path=" + location + "\npath=" + other,
+                _ => "path=" + location
+            };
+            if (scenario == "redirected")
+                File.CreateSymbolicLink(Path.Combine(scratch.Root, "FixtureDevice.ini"), scratch.Write("other.ini", content));
+            else
+                scratch.Write("FixtureDevice.ini", content);
+        }
+        var runner = new Runner(_ => new(0, "FixtureDevice", ""));
+        var service = new ManagedActions(new(new ToolLocator([scratch.Root]), runner, scratch.Root), () => false, () => scratch.Root);
+        var action = Assert.Single(await service.DiscoverAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(Eligibility.Unavailable, action.Eligibility);
+        Assert.Equal("Skipped", (await service.ExecuteAsync(action, TestContext.Current.CancellationToken)).State);
+        Assert.DoesNotContain(runner.Requests, request => request.Kind == ExecutionKind.Mutation);
     }
 
     [Fact]

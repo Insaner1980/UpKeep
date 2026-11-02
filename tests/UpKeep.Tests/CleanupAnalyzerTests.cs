@@ -10,17 +10,25 @@ namespace UpKeep.Tests;
 
 public class CleanupAnalyzerTests
 {
-    [Fact]
-    public async Task SystemTempCannotBeScannedThroughAnOrdinaryRoot()
+    [Theory]
+    [InlineData("WindowsTemp", true)]
+    [InlineData("SystemTemp", false)]
+    [InlineData("LocalServiceTemp", false)]
+    [InlineData("NetworkServiceTemp", false)]
+    public async Task SystemTempCannotBeScannedThroughAnOrdinaryRoot(string rootId, bool supported)
     {
         using var scratch = new Scratch();
-        var path = Path.Combine(UpKeep.Core.Elevation.CleanupProtocol.ResolveRoot("WindowsTemp"), "UpKeep-do-not-enumerate-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(UpKeep.Core.Elevation.CleanupProtocol.ResolveRoot(rootId), "UpKeep-do-not-enumerate-" + Guid.NewGuid().ToString("N"));
         using var analysis = await new CleanupAnalyzer(new(scratch.Root), new(new ToolLocator([]), new GitRunner(), scratch.Root))
             .AnalyzeAsync(new([new("temp", path, RootKind.Temporary, CleanupCategory.TemporaryFiles)]),
                 new Progress<CleanupProgress>(), TestContext.Current.CancellationToken);
         Assert.Empty(analysis.Manifest.Read());
         Assert.Empty(analysis.Roots);
         Assert.Contains("Administrator access required", Assert.Single(analysis.Groups).Reason);
+        var reason = Assert.Single(analysis.Groups).Reason;
+        Assert.Equal(supported, reason.Contains("Use Analyze system temporary files", StringComparison.Ordinal));
+        if (!supported)
+            Assert.Contains("Analysis is unavailable", reason);
     }
 
     [Theory]

@@ -117,12 +117,17 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                 return new(action.Id, "Skipped", 0, "An emulator started after analysis.");
             }
 
+            if (!(await Query(action.Tool, EmulatorCommand, "list")).Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Contains(action.AvdName, StringComparer.Ordinal))
+            {
+                return new(action.Id, "Skipped", 0, "Virtual-device inventory changed.");
+            }
+
             try
             {
                 if (action.AvdIdentity is not { } expected ||
                     !string.Equals(action.Location, Path.Combine(avdRoot(), action.AvdName + ".avd"), StringComparison.OrdinalIgnoreCase))
                     return new(action.Id, "Skipped", 0, "Virtual-device location changed. Analyze again before removing it.");
-                var current = PathGuard.Snapshot(action.Location);
+                var current = SnapshotAvd(avdRoot(), action.AvdName);
                 if (current.Volume != expected.Volume || current.Id != expected.Id || current.Created != expected.Created)
                     return new(action.Id, "Skipped", 0, "Virtual device was replaced since analysis. Analyze again before removing it.");
             }
@@ -131,10 +136,6 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                 return new(action.Id, "Skipped", 0, "Virtual-device identity could not be rechecked.");
             }
 
-            if (!(await Query(action.Tool, EmulatorCommand, "list")).Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Contains(action.AvdName, StringComparer.Ordinal))
-            {
-                return new(action.Id, "Skipped", 0, "Virtual-device inventory changed.");
-            }
         }
         if (token.IsCancellationRequested)
         {
@@ -207,21 +208,42 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                     FileIdentity? identity = null;
                     try
                     {
-                        if (!active && PathGuard.ValidLocalRoot(location))
-                            identity = PathGuard.Snapshot(location);
+                        if (!active)
+                            identity = SnapshotAvd(root, name);
                     }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
                     { // An unavailable or redirected directory cannot identify the reviewed device.
                     }
                     result.Add(new("avd-" + name, name, CleanupCategory.Emulators, android, [EmulatorCommand, "remove", name], location,
                         active ? "An emulator is running; removal is blocked because ownership cannot be proved." : identity is null
-                            ? "Virtual-device directory identity unavailable. Removal is blocked."
+                            ? "Virtual-device configuration or directory identity unavailable. Removal is blocked."
                             : "Stopped. Size and image identity unavailable. Removes this virtual device and its data. Shared system images are retained.",
                         active ? Eligibility.InUse : identity is null ? Eligibility.Unavailable : Eligibility.ReviewRequired, name, AvdIdentity: identity));
                 }
             }
             catch (IOException) { result.Add(new("avd-error", "Emulators", CleanupCategory.Emulators, android, [], root, "Virtual-device state unavailable. Removal unavailable.", Eligibility.Unavailable)); }
         }
+    }
+
+    private static FileIdentity SnapshotAvd(string root, string name)
+    {
+        var location = Path.Combine(root, name + ".avd");
+        if (!PathGuard.ValidLocalRoot(location))
+            throw new IOException("Invalid virtual-device directory.");
+
+        var configuration = Path.Combine(root, name + ".ini");
+        PathGuard.Snapshot(configuration);
+        var paths = File.ReadLines(configuration)
+            .Select(line => line.Split('=', 2, StringSplitOptions.TrimEntries))
+            .Where(parts => parts.Length == 2 && parts[0] == "path")
+            .Select(parts => parts[1]).ToArray();
+        if (paths.Length != 1 || !PathGuard.ValidLocalRoot(paths[0]) ||
+            !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(paths[0])),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(location)), StringComparison.OrdinalIgnoreCase) ||
+            !Directory.Exists(location))
+            throw new IOException("The configured virtual-device directory does not match the reviewed directory.");
+
+        return PathGuard.Snapshot(location);
     }
 
     private async Task DiscoverPipAsync(List<ManagedCleanupAction> result)

@@ -44,8 +44,13 @@ public class RootDiscoveryTests
         Assert.Equal(CleanupCategory.TestArtifacts, project.Category);
         Assert.Equal(roots.Count, roots.Select(r => r.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(roots, r => Assert.True(PathGuard.ValidLocalRoot(r.Path)));
-        Assert.Equal(4, roots.Count(r => r.Kind == RootKind.ProtectedSystem));
-        Assert.Contains(roots, r => r.Kind == RootKind.Temporary);
+        foreach (var rootId in new[] { "WindowsTemp", "SystemTemp", "LocalServiceTemp", "NetworkServiceTemp" })
+        {
+            var path = UpKeep.Core.Elevation.CleanupProtocol.ResolveRoot(rootId);
+            var root = Assert.Single(roots, r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(RootKind.ProtectedSystem, root.Kind);
+            Assert.Equal(CleanupCategory.TemporaryFiles, root.Category);
+        }
         Assert.All(roots.Where(r => r.Kind == RootKind.Logs), r => Assert.True(Directory.Exists(r.Path)));
     }
 

@@ -65,15 +65,15 @@ Use these local sources together:
 | [tests/UpKeep.Tests](tests/UpKeep.Tests) | Executable regression expectations and fixture boundaries |
 | [tests/UpKeep.UiTests](tests/UpKeep.UiTests) | WinUI executable linking production window/XAML/platform sources; isolated workflow assertions, not a second product app |
 | [Windows-check configuration](tools/windows-check.config.psd1) and [Sonar workflow](tools/sonar.ps1) | Actual local check filters, build targets, coverage collection, and external-analysis boundary |
-| [Implementation progress](artifacts/tests/implementation-progress.md) | Historical decisions, fixes, and implementation handoff from 2026-10-31 |
-| [Verification report](artifacts/tests/verification.md) | Historical build/test/runtime evidence and explicitly unverified checks |
-| [Final recorded TRX](artifacts/tests/final-results.trx) | Machine-readable result of the recorded 2026-10-31 test run |
-| [Provider coverage report](artifacts/tests/provider-coverage.json) | Machine-specific output from the historical command-provider integration check |
-| [Sonar run log](reports/sonar.txt), [test TRX](reports/sonar-test-results/UpKeep.Tests.trx), and [UI result](reports/sonar-test-results/UpKeep.UiTests.json) | Historical 2026-11-01 build, filtered test, UI harness, and upload evidence; predates the two later correction commits |
-| [UI correction result](artifacts/tests/coderabbit-pr1-ui.json) and [UI follow-up result](artifacts/tests/coderabbit-pr1-followup-ui.json) | Later local harness summaries; assertion totals only, without embedded revision or run metadata |
+| Implementation progress (`artifacts/tests/implementation-progress.md`) | Historical decisions, fixes, and implementation handoff from 2026-10-31 |
+| Verification report (`artifacts/tests/verification.md`) | Historical build/test/runtime evidence and explicitly unverified checks |
+| Final recorded TRX (`artifacts/tests/final-results.trx`) | Machine-readable result of the recorded 2026-10-31 test run |
+| Provider coverage report (`artifacts/tests/provider-coverage.json`) | Machine-specific output from the historical command-provider integration check |
+| Sonar run log (`reports/sonar.txt`), test TRX (`reports/sonar-test-results/UpKeep.Tests.trx`), and UI result (`reports/sonar-test-results/UpKeep.UiTests.json`) | Historical 2026-11-01 build, filtered test, UI harness, and upload evidence; predates the two later correction commits |
+| UI correction result (`artifacts/tests/coderabbit-pr1-ui.json`) and UI follow-up result (`artifacts/tests/coderabbit-pr1-followup-ui.json`) | Later local harness summaries; assertion totals only, without embedded revision or run metadata |
 | This file | Consolidated context, checked against source on the date above |
 
-Reports referenced under `artifacts/` and `reports/` are historical local evidence. Both directories are ignored by Git; these reports are unavailable in a fresh checkout. The linked files existed during this review. Their links describe local evidence locations, not files shipped in the repository. An old report's statement that Git was absent describes that earlier task, not today's workspace.
+Reports referenced under `artifacts/` and `reports/` are historical local evidence. Both directories are ignored by Git; these reports are unavailable in a fresh checkout. The referenced files existed during the original review. Their paths identify local evidence, not files shipped in the repository. An old report's statement that Git was absent describes that earlier task, not today's workspace.
 
 Interpret the information carefully:
 
@@ -506,7 +506,7 @@ WinGet catalog connection/search awaits are not bound to `ProcessRunner`'s timeo
 
 Consequently, an updater that exits successfully but leaves the same reported version can remain `CompletedUnverified`. This is deliberate honesty about the available proof, not proof that the updater did nothing correctly.
 
-Command mutations map exit codes `0` → `CompletedUnverified`, `3010` → `RestartRequired`, `1223` → `Canceled`, and all other/missing codes → `Failed`. This mapping is exit-code-based rather than uniformly using `ProcessResult.Success`; post-verification is a distinct step. The coordinator only invokes that step for `CompletedUnverified`, not for `RestartRequired`. A post-check exception is caught as a failed item; the implementation does not promise to preserve `CompletedUnverified` through every exceptional verification path.
+Command mutations map exit codes `0` → `CompletedUnverified`, `3010` → `RestartRequired`, `1223` → `Canceled`, and all other/missing codes → `Failed`. This mapping is exit-code-based rather than uniformly using `ProcessResult.Success`; post-verification is a distinct step. The coordinator only invokes that step for `CompletedUnverified`, not for `RestartRequired`. If `VerifyAsync` throws, the coordinator preserves `CompletedUnverified` and includes the exception message in `Detail`.
 
 ### 7.4 WSL distributions, APT, and Snap
 
@@ -693,7 +693,7 @@ All enabled cache actions require separate deliberate selection from details:
 
 Exact effects are owned by the manager and are not inferred from directory names. Failed discovery can produce unavailable rows; not every manager error has identical UI reporting. There is no current generic cache-deletion rule for Gradle, Maven, Sonar internals, Playwright browser installations, Codex runtime versions, or arbitrary IDE/browser caches.
 
-Managed discovery selects the first resolved entry for each supported tool, unlike update providers that can enumerate multiple installations. pnpm/uv/Bun and pip cache paths are checked with `ValidLocalRoot`; npm preserves its returned cache string and NuGet preserves the manager's description. The recorded location describes the reviewed action, but cache commands use their manager's current configuration and do not re-query/lock the cache location immediately before execution. Only AVD actions have the additional pre/post inventory checks described below. Ordinary cache completion means `ProcessResult.Success`, not verified removal of specified files or measured space.
+Managed discovery selects the first resolved entry for each supported tool, unlike update providers that can enumerate multiple installations. pnpm/uv/Bun and pip cache paths are checked with `ValidLocalRoot`; npm preserves its returned cache string and NuGet preserves the manager's description. Before execution, `ManagedActions.ExecuteAsync` repeats each action's `LocationQuery` and skips the action if the location has changed or cannot be rechecked. Cache commands still use their manager's current configuration; the recheck does not lock that configuration. Only AVD actions have the additional pre/post inventory checks described below. Ordinary cache completion means `ProcessResult.Success`, not verified removal of specified files or measured space.
 
 An unavailable npm cache query is omitted rather than rendered as an unavailable row. Other supported cache queries and failed interpreter/AVD discovery generally create explicit unavailable actions. Missing tools are omitted; there is no generic filesystem fallback.
 
@@ -706,7 +706,7 @@ AVDs are discovered with `android emulator list`. The AVD root follows `ANDROID_
 - An AVD is distinct from the Android SDK emulator package and from a shared system image.
 - Current size and system-image identity are explicitly unavailable.
 - If any detected `emulator` or `qemu-system` process is running, removal is blocked conservatively; the app does not claim per-device process ownership.
-- Execution checks for a running emulator again and refreshes the AVD inventory before mutation.
+- Removal requires exactly one absolute local `path` in `<name>.ini` matching the default `<root>/<name>.avd` directory. Missing, ambiguous, redirected, or nondefault configurations remain unavailable. The configured path and directory identity are rechecked after refreshing the AVD inventory and before mutation; execution also checks for a running emulator again.
 - Selected removal uses `android emulator remove <name>` and then checks that the device is no longer listed.
 - It does not stop an emulator, reset a device, delete snapshots separately, uninstall an SDK, or request deletion of shared system images.
 
@@ -1122,7 +1122,7 @@ These are useful context for questions and reviews, not an authorization to expa
 | Provider completeness and pauses | Coordinator consumes result rows rather than aggregating `Complete`; no separate provider-wide failure pause or universal installer-prompt detection |
 | Check cancellation | CLI probes have bounded waits/capture; WinGet COM awaits and preparatory WSL previews do not all support immediate cancellation |
 | Cache coverage | Unsupported internal/runtime/browser/cache roots remain protected; npx environments and old Codex runtimes are not blanket-deleted |
-| Managed cache verification | Reviewed commands are matched, but cache configuration is not re-queried immediately before mutation and exact removal is not post-verified; AVD inventory checks are separate |
+| Managed cache verification | Reviewed commands and queried cache locations are rechecked before mutation; configuration is not locked and exact removal is not post-verified; AVD inventory checks are separate |
 | Check concurrency | Implementation is sequential; the plan permits at most two independent checks, not a requirement that two must run |
 | UI list architecture | Native ListViews with dynamically created elements; the planned small view model/separate views were replaced by code-behind; no measured arbitrary-inventory performance guarantee |
 | Cleanup details/accounting | Last-modified metadata is not displayed; canceled items lack a separate aggregate; candidate pages have only Next; protected analysis shows only the first 200 entries |
