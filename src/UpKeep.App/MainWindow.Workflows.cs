@@ -365,7 +365,17 @@ public sealed partial class MainWindow
         Root.Children.Remove(detailsPanel);
         detailsPanel = null;
         Navigation.Visibility = Visibility.Visible;
+        var updateOrigin = UpdateList.Items.FirstOrDefault(item => ReferenceEquals(item, detailsOrigin) ||
+            item is Grid row && detailsOrigin is not null && row.Children.Contains(detailsOrigin));
+        var updateOriginIndex = updateOrigin is null ? -1 : UpdateList.Items.IndexOf(updateOrigin);
+        RenderUpdates();
         RenderCleanup();
+        if (updateOriginIndex >= 0 && updateOriginIndex < UpdateList.Items.Count)
+        {
+            detailsOrigin = UpdateList.Items[updateOriginIndex] is Grid row
+                ? row.Children.OfType<Button>().Single() : (Control)UpdateList.Items[updateOriginIndex];
+            UpdateList.UpdateLayout();
+        }
         if (detailsCategory is { } category)
         {
             detailsOrigin = CleanupList.Items.OfType<Grid>().ElementAt((int)category).Children.OfType<Button>().Single();
@@ -447,7 +457,7 @@ public sealed partial class MainWindow
         try
         {
             var counts = await Task.Run(() => CleanupMethodCounts(selection), CancellationToken.None);
-            if (exitWhenIdle || !await Confirm("Clean selected items?", string.Join("\n", counts.Concat(chosenActions.Select(a => a.Name + ": " + a.Detail))) + "\nChanged, inaccessible, or locked files will be skipped. Recycled data does not free disk space.", "Clean selected"))
+            if (exitWhenIdle || !await Confirm("Clean selected items?", string.Join("\n", counts.Concat(chosenActions.Select(a => a.Name + ": " + a.Detail))) + "\nChanged, inaccessible, or locked files will be skipped. Recycled data does not free disk space.", "Clean selected") || exitWhenIdle)
             {
                 return;
             }

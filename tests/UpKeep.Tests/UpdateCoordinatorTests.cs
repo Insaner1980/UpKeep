@@ -151,6 +151,27 @@ public class UpdateCoordinatorTests
         Assert.Equal(UpdateState.Blocked, Assert.Single(result).Result.State);
         Assert.Equal(0, provider.Started);
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task VerificationExceptionPreservesCompletedMutation(bool canceled)
+    {
+        using var scratch = new Scratch();
+        var provider = new Provider
+        {
+            OnVerify = () => { throw canceled ? new OperationCanceledException("Verification interrupted") : new IOException("Verification unavailable"); }
+        };
+        var gate = new OperationGate();
+        var coordinator = new UpdateCoordinator([provider], new(new ToolLocator([]), new ProcessRunner(), scratch.Root), new(new(scratch.Root)), gate);
+        var results = await coordinator.ExecuteAsync([provider.Item("one"), provider.Item("two")], new ProgressLog(), TestContext.Current.CancellationToken);
+        Assert.Equal(2, provider.Started);
+        Assert.All(results, result =>
+        {
+            Assert.Equal(UpdateState.CompletedUnverified, result.Result.State);
+            Assert.Contains("version not verified", result.Result.Detail);
+        });
+        Assert.False(gate.IsBusy);
+    }
     [Fact]
     public async Task DuplicateInstallationIsRejected()
     {

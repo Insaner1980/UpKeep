@@ -1,10 +1,20 @@
 using UpKeep.Core.Models;
+using UpKeep.Core.Elevation;
 
 namespace UpKeep.Core.Cleanup;
 
 public static class CleanupRootResolver
 {
     private static readonly string[] TemporaryFolderNames = ["tmp", "Temp"];
+    private static readonly string[] ProtectedRoots = new[] { "WindowsTemp", "SystemTemp", "LocalServiceTemp", "NetworkServiceTemp" }
+        .Select(CleanupProtocol.ResolveRoot).ToArray();
+
+    internal static bool IsProtectedPath(string path)
+    {
+        var fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        return ProtectedRoots.Any(root => fullPath.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+            fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+    }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "S5443", Justification = "Discovers existing temporary files for explicit reviewed cleanup; creates no files in the shared directory. PathGuard revalidates identity and excludes reparse points before removal.")]
     public static IReadOnlyList<CleanupRoot> Resolve(IReadOnlyList<string> projectRoots)
@@ -19,10 +29,9 @@ public static class CleanupRootResolver
             Add(path, RootKind.Temporary, CleanupCategory.TemporaryFiles);
         }
 
-        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        foreach (var relative in new[] { "Temp", "SystemTemp", @"ServiceProfiles\LocalService\AppData\Local\Temp", @"ServiceProfiles\NetworkService\AppData\Local\Temp" })
+        foreach (var path in ProtectedRoots)
         {
-            Add(Path.Combine(windows, relative), RootKind.ProtectedSystem, CleanupCategory.TemporaryFiles);
+            Add(path, RootKind.ProtectedSystem, CleanupCategory.TemporaryFiles);
         }
 
         foreach (var path in projectRoots)
@@ -75,6 +84,11 @@ public static class CleanupRootResolver
         path = Path.TrimEndingDirectorySeparator(path);
         if (PathGuard.ValidLocalRoot(path) && !roots.Any(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase)))
         {
+            if (IsProtectedPath(path))
+            {
+                kind = RootKind.ProtectedSystem;
+                category = CleanupCategory.TemporaryFiles;
+            }
             roots.Add(new(Guid.NewGuid().ToString("N"), path, kind, category));
         }
     }

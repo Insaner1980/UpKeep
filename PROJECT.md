@@ -2,6 +2,8 @@
 
 **Last checked against local source: 2026-11-01 (Europe/Helsinki).**
 
+**Review baseline:** local branch `codex/initial-review`, HEAD `8887708` (`Korjaa siivouksen virheraportointi ja raporttien luokittelu`), with a clean working tree before this documentation update. This identifies the inspected source, not a newly tested build. Only this document was changed during the review.
+
 UpKeep is a compact, English-language Windows 11 tray application for explicitly requested software updates and reviewed cleanup. It brings several installed package managers, native updaters, project outputs, temporary locations, caches, and Android virtual devices into one small panel. The two main views are **Updates** and **Cleanup**.
 
 This document is intended to be reusable context for code reviews, UI discussions, debugging, implementation questions, and test planning. It describes the current source, explains the product constraints, and identifies evidence boundaries. It is not a claim that every implemented path has been validated on the real desktop.
@@ -42,11 +44,11 @@ This document is intended to be reusable context for code reviews, UI discussion
 | Runtime storage | `%LOCALAPPDATA%\UpKeep` |
 | Project output | `artifacts/` |
 | Persistence | Small JSON settings/summary files and temporary JSONL cleanup manifests; no database |
-| Test framework | xUnit, with Windows-native fixture tests and explicitly tagged live read-only provider checks |
+| Test framework | xUnit core/native/provider tests, plus a separate executable WinUI workflow harness; live read-only provider checks are explicitly tagged |
 | Networking | Installed managers and the WinGet API may contact configured sources during requested operations |
 | Background behavior | The tray process can remain open and finish requested work; no scheduled checks or automatic user maintenance |
-| Local version-control state | `C:\Dev\UpKeep` was not a Git repository when this document was prepared |
-| Verification boundary | Historical 114-test result exists; source has later changes; no new application tests ran for this document |
+| Local version-control state | Git repository; inspected feature branch `codex/initial-review` at `8887708`; configured origin is `https://github.com/Insaner1980/UpKeep.git` |
+| Verification boundary | Historical 114- and 203-test runs and WinUI harness reports exist; none is presented as a fresh pass of the reviewed HEAD; no application tests ran for this document |
 
 The exact configured dependencies are listed in [section 12](#12-build-test-and-distribution). These are repository configuration facts, not a statement that those versions are currently the newest available releases.
 
@@ -61,13 +63,17 @@ Use these local sources together:
 | [Approved UI reference](docs/design/upkeep-ui-reference.png) | Visual direction; contains illustrative Finnish copy and example data |
 | [src](src) | What is actually implemented; use this to verify behavior described here |
 | [tests/UpKeep.Tests](tests/UpKeep.Tests) | Executable regression expectations and fixture boundaries |
-| [Implementation progress](artifacts/tests/implementation-progress.md) | Historical decisions, fixes, and implementation handoff from 2026-10-31 |
-| [Verification report](artifacts/tests/verification.md) | Historical build/test/runtime evidence and explicitly unverified checks |
-| [Final recorded TRX](artifacts/tests/final-results.trx) | Machine-readable result of the recorded 2026-10-31 test run |
-| [Provider coverage report](artifacts/tests/provider-coverage.json) | Machine-specific output from the historical command-provider integration check |
+| [tests/UpKeep.UiTests](tests/UpKeep.UiTests) | WinUI executable linking production window/XAML/platform sources; isolated workflow assertions, not a second product app |
+| [Windows-check configuration](tools/windows-check.config.psd1) and [Sonar workflow](tools/sonar.ps1) | Actual local check filters, build targets, coverage collection, and external-analysis boundary |
+| Implementation progress (`artifacts/tests/implementation-progress.md`) | Historical decisions, fixes, and implementation handoff from 2026-10-31 |
+| Verification report (`artifacts/tests/verification.md`) | Historical build/test/runtime evidence and explicitly unverified checks |
+| Final recorded TRX (`artifacts/tests/final-results.trx`) | Machine-readable result of the recorded 2026-10-31 test run |
+| Provider coverage report (`artifacts/tests/provider-coverage.json`) | Machine-specific output from the historical command-provider integration check |
+| Sonar run log (`reports/sonar.txt`), test TRX (`reports/sonar-test-results/UpKeep.Tests.trx`), and UI result (`reports/sonar-test-results/UpKeep.UiTests.json`) | Historical 2026-11-01 build, filtered test, UI harness, and upload evidence; predates the two later correction commits |
+| UI correction result (`artifacts/tests/coderabbit-pr1-ui.json`) and UI follow-up result (`artifacts/tests/coderabbit-pr1-followup-ui.json`) | Later local harness summaries; assertion totals only, without embedded revision or run metadata |
 | This file | Consolidated context, checked against source on the date above |
 
-Reports referenced under `artifacts/` are historical local evidence. That directory is ignored by Git; these reports are unavailable in a fresh checkout. Their links describe the original local evidence locations, not files shipped in the repository.
+Reports referenced under `artifacts/` and `reports/` are historical local evidence. Both directories are ignored by Git; these reports are unavailable in a fresh checkout. The referenced files existed during the original review. Their paths identify local evidence, not files shipped in the repository. An old report's statement that Git was absent describes that earlier task, not today's workspace.
 
 Interpret the information carefully:
 
@@ -139,6 +145,7 @@ Current implementation is in [MainWindow.xaml.cs](src/UpKeep.App/MainWindow.xaml
 - The tray icon rectangle identifies the monitor when available. Horizontal anchoring is the work area's **right edge**, including when the icon is in overflow. A window-monitor fallback exists.
 - Display/DPI messages request placement recalculation.
 - Tray activation toggles the panel. Version-4 tray activation events and legacy mouse events are handled separately to avoid a double toggle.
+- `MainWindow.HideOnDeactivation` records a monotonic timestamp. `TogglePanel` suppresses reopening for 300 ms after a deactivation hide, so the tray click that caused deactivation does not immediately reopen the panel. A subsequent activation can open it normally; `ShowPanel` clears the timestamp.
 - The tray context menu contains **Open UpKeep** and **Exit**.
 - Hide, ordinary window close, or deactivation without an UpKeep dialog hides the panel. It does not cancel requested maintenance.
 - Escape closes an open details surface first; otherwise it hides the panel when no dialog is open.
@@ -214,17 +221,24 @@ Initial copy asks the user to analyze first. After analysis, category summaries 
 
 [CleanupText.cs](src/UpKeep.App/CleanupText.cs) owns summary formatting. It uses invariant-culture decimal units: B, KB, MB, and GB at powers of 1,000. Exact candidate byte counts are available in details. A nonzero small size must not be rounded into a misleading zero-MB claim.
 
+Category check state reflects direct groups and individual-file selections. Clearing a category clears both of those selections, including review-required groups previously selected in details; it does not clear separately selected manager actions. Manager selections appear in `SelectedSize`, not in the category checkbox's aggregate state. Counts of cleanup options include unavailable actions, whose detail checkboxes remain disabled.
+
+File rows show relative path, exact logical bytes, removal method, and reason; the clipboard preview includes the full path. Native timestamps are stored in the manifest identity but are not currently displayed as a last-modified field. Protected analysis displays only the first 200 returned candidates and has no additional page control.
+
+Completed cleanup results are retained by the open result surface and its paging callbacks. After leaving that surface there is no dedicated action to reopen the previous result list; there is no persistent result-history browser. Canceling the ordinary cleanup confirmation preserves the analysis and selection for another attempt.
+
 ### 4.6 Settings and details
 
 Settings is a **Project folders** dialog, not a third tab. It supports adding a local folder through a native folder picker and removing a selected folder from the saved list. A `Dev` folder on the Windows system drive is suggested only if it exists and is not already selected; the suggestion starts unchecked.
 
 Saving does not clean a folder. It only changes the roots used on a later analysis. Invalid/unreadable existing settings are preserved, and the settings dialog disables saving when a load warning exists.
 
-Details use the same panel, with a Back action and an attempted focus return to the origin. **Copy details** previews text in a confirmation dialog before writing to the clipboard. Paths and provider messages may contain personal machine information, so copied details are not inherently anonymized.
+Details use the same panel, with a Back action and an attempted focus return to the origin. Cleanup rendering rebuilds the category rows, so `detailsCategory` identifies and focuses the new category Details button instead of the detached original control. File-detail Back returns to the main category list, not a stacked history of detail pages. **Copy details** previews text in a confirmation dialog before writing to the clipboard. Paths and provider messages may contain personal machine information, so copied details are not inherently anonymized.
 
 ### 4.7 Busy, cancellation, hiding, and exit
 
 - Main list interaction and conflicting actions are disabled while work is in progress.
+- `UpdateSelected` sets `busy` before updater confirmation or asynchronous WSL preview. `CleanSelected` sets it before counting selected manifest methods and showing confirmation. A competing check/analysis therefore cannot replace the reviewed inventory or dispose its manifest during those awaits. Declining confirmation restores idle controls in `finally`.
 - During a check or analysis, the corresponding action becomes a cancellation control.
 - During mutation, the action text becomes **Stop after current**. It stops queued work; it does not force-kill an installer already running.
 - Tabs can still represent the same ongoing operation; switching views must not create another runner or silently repeat a scan.
@@ -232,11 +246,13 @@ Details use the same panel, with a Back action and an attempted focus return to 
 - Exiting while a mutation owns the operation gate brings the panel forward and offers **Stop after current and exit**. The normal confirmation close action is **Cancel**.
 - Exiting during a scan requests cancellation and defers final exit until idle.
 
+The UI `busy` flag covers preparation/confirmation as well as execution; `OperationGate` covers mutation in the core and managed-action workflow. They are related but distinct safeguards. Settings and Hide remain header actions; saving project roots affects later analysis. The UI harness exercises confirmation locks and exit decisions with fixtures, but not a real external installer window or UAC transition.
+
 ### 4.8 Accessibility expectations and evidence
 
 Current source uses native controls, checkbox names that include their item, named icon buttons, wrapping text, a named progress bar, and a polite live region for the update stage. Details explicitly move focus to Back and try to restore the originating control on return.
 
-These implementation elements are not proof of a complete accessible flow. The recorded remaining desktop checks include 360-DIP width, 100/150/200% monitor scaling, 200% Windows text size, mixed-DPI monitors, high contrast, Narrator, complete keyboard/tab/focus behavior, Explorer restart, and published-app interaction. Any future UI validation should exercise realistic long names, long paths, errors, selection states, and busy dialogs as well as empty and successful states.
+These implementation elements are not proof of a complete accessible flow. The separate WinUI harness now asserts selected navigation, dialog, visibility, and rebuilt-category focus behavior; its historical results and limits are in section 13. Remaining desktop checks include 360-DIP width, 100/150/200% monitor scaling, 200% Windows text size, mixed-DPI monitors, high contrast, Narrator, complete keyboard/tab/focus behavior, Explorer restart, and current published-app interaction. Any future UI validation should exercise realistic long names, long paths, errors, selection states, and busy dialogs as well as empty and successful states.
 
 This is a Windows UI. Its measurements are DIPs and Windows display/text scaling; Android-specific dp/font-scale test instructions do not automatically apply.
 
@@ -251,9 +267,10 @@ The solution is [UpKeep.slnx](UpKeep.slnx). All projects inherit the Windows/x64
 | `UpKeep.App` | WinUI window, workflow wiring, user selection/confirmation, tray, native recycling, helper client | `UpKeep.Core`, WinUI/Windows App SDK, WinGet interop |
 | `UpKeep.Core` | Models, discovery, manager contracts, update coordination, cleanup analysis/execution, path guards, process execution, storage, helper protocol | .NET/Windows APIs and WinGet interop; no WinUI controls |
 | `UpKeep.CleanupHost` | Small elevated executable for a fixed set of protected temporary roots | `UpKeep.Core` |
-| `UpKeep.Tests` | Core, parser, coordinator, fixture, native, and read-only integration tests | `UpKeep.Core`; selected app source files linked into the test assembly |
+| `UpKeep.Tests` | Core, parser, coordinator, fixture, native, and read-only integration tests | `UpKeep.Core`; selected app sources and `ProtectedTempService.cs` linked into the test assembly |
+| `UpKeep.UiTests` | Executable WinUI workflow/coverage harness on an interactive Windows desktop | `UpKeep.Core`; production `MainWindow*.cs`, `MainWindow.xaml`, `CleanupText.cs`, all app platform sources, and shared `Scratch.cs`; separate test `App` entry point |
 
-The code uses direct construction and code-behind. It does not currently use a dependency-injection container, MVVM framework, generated view models, a web frontend, a local web server, or a database layer. App types use the `UpKeep_App` namespace; core types use `UpKeep.Core`.
+The code uses direct construction and code-behind. It does not currently use a dependency-injection container, MVVM framework, generated view models, a web frontend, a local web server, or a database layer. App types use the `UpKeep_App` namespace; core types use `UpKeep.Core`. `MainWindow` accepts optional `AppPaths` for fixture storage; production passes no override. The planned `ViewModels`, separate `Views`, `Strings.resw`, and `Theme.xaml` were not created. Follow the actual composition in `InitializeServices`, not the planned file map.
 
 ### 5.2 Main execution paths
 
@@ -272,8 +289,9 @@ Updates
 
 Cleanup
   -> resolve roots -> analyze/classify -> sealed per-file manifest
-  -> selection + confirmation -> revalidate handles -> recycle/delete
+  -> busy preparation + selection confirmation -> revalidate handles -> recycle/delete
   -> separately selected manager/AVD actions -> paged results
+  -> preserve prior file outcomes if a later manager or summary write fails
 
 Protected analysis
   -> confirmation -> ElevationClient -> UAC -> CleanupHost -> named pipe
@@ -323,14 +341,20 @@ Protected analysis
 | [CleanupHost Program.cs](src/UpKeep.CleanupHost/Program.cs) | Elevated process validation and pipe request loop |
 | [ProtectedTempService.cs](src/UpKeep.CleanupHost/ProtectedTempService.cs) | Protected-root age-based analysis and internal removal implementation |
 | [Publish.ps1](scripts/Publish.ps1) | App/helper self-contained publication and required-file checks |
+| [UI test entry point](tests/UpKeep.UiTests/App.xaml.cs) and [MainWindow.TestFlows.cs](tests/UpKeep.UiTests/MainWindow.TestFlows.cs) | Real XAML/control workflow assertions with injected storage and fake providers/runners; no production test mode |
+| [Scratch.cs](tests/UpKeep.Tests/Scratch.cs) | Workspace-marker-based fixture ownership and reparse-aware teardown |
+| [windows-check.config.psd1](tools/windows-check.config.psd1) | Solution, x64 Debug build, xUnit test project, and excluded live/native tests |
+| [sonar.ps1](tools/sonar.ps1) and [.config/dotnet-tools.json](.config/dotnet-tools.json) | Pinned .NET analysis tools, two coverage inputs, result validation, and explicit cloud-upload opt-in |
+
+Useful workflow entry points in `MainWindow.Workflows.cs`: `CheckUpdates`/`RenderUpdates`, `UpdateSelected`/`ReviewDistroTransactionsAsync`, `Analyze`/`RenderCleanup`, `ShowCategory`/`ShowFiles`, `CleanSelected`/`ExecuteManagedActionsAsync`/`ShowCleanupResults`, and `OpenDetails`/`CloseDetails`. `SetBusy`, `SetBusyActions`, and `SetScanActivity` control enabled states and labels. Selection lives in ID/key sets, with a separate byte/group metadata dictionary for individually selected files; there is no persistent selection model.
 
 ### 5.4 Inactive scaffolding and misleading file names
 
-`MainPage.xaml`/`.xaml.cs`, `UpKeep.Core/Class1.cs`, and `UnitTest1.cs` remain from scaffolding. The app launches `MainWindow`, not `MainPage`. The empty template test is not substantive product coverage.
+`MainPage.xaml`/`.xaml.cs` remain unused scaffolding. The app launches `MainWindow`, not `MainPage`. `UpKeep.Core/Class1.cs` and `UnitTest1.cs` are no longer present; they must not be included in the source map or test coverage.
 
 `WinGetActivation.cs` contains alternate COM activation helpers, but the inspected provider constructs the interop types directly; no call sites for that helper were found in the current source.
 
-`Package.appxmanifest`, a packaged launch profile, and x86/ARM64 publish-profile files remain present. They do not override `WindowsPackageType=None`, the x64 solution/shared configuration, or the actual publish script. Their presence is not evidence of supported MSIX, Store, x86, or ARM64 delivery.
+`Package.appxmanifest` and a packaged launch profile remain present. No x86/ARM64 publish-profile files are present in the inspected tree. The scaffold package manifest's older device-family versions and template capabilities do not override `WindowsPackageType=None`, the x64 solution/shared configuration, or the actual publish script. They are not evidence of supported MSIX, Store, x86, ARM64, or AI functionality.
 
 `TrayNotification` handles native tray input messages. Its name does not mean the product has a user notification or reminder feature.
 
@@ -387,6 +411,8 @@ Important entry-point rules:
 
 `InstallationOwnership.Resolve` uses environment and installation identity, preserving case-sensitive WSL grouping and case-insensitive Windows grouping. It can block competing owner rows and suppress a self-updater when its executable is under a matching WinGet installation root. Independently managed hosted packages, such as VS Code extensions or .NET tools, are not treated as the host executable's self-updater.
 
+Ownership-group normalization is not a custom equality implementation on `InstallationKey`: the record's own string equality remains case-sensitive. Keep that distinction in mind when changing provider key construction or coordinator lookups. `ToolEntry.Identity` can identify a CLI script while `Executable` identifies the Node/editor host; package keys also incorporate scope and package ID.
+
 Examples that must remain distinct include npm-installed Codex CLI versus the Codex desktop app, and separate pip-installed versus WinGet-installed uv installations. The implementation is not a universal proof of every installation's owner; unresolved overlaps must remain visible and blocked.
 
 ### 6.4 Coordinator behavior
@@ -394,6 +420,8 @@ Examples that must remain distinct include npm-installed Codex CLI versus the Co
 `MainWindow.InitializeServices` creates one WinGet provider and one command provider for each host `ManagerKind` other than APT/Snap: **17 command-provider kinds**. Distro-specific providers are added only through an explicit distro check.
 
 Global checks currently run **sequentially**. Each provider failure is converted into an unavailable result without discarding successful rows from other providers. Distro providers are skipped during a global check, even if one was previously added by the user.
+
+`ProviderCheckResult.Complete` and `Diagnostics` are available to tests and provider callers, but the coordinator currently consumes `Items`, not a separate aggregate completeness flag. Providers therefore represent check failures as explicit rows. Missing managers and valid empty inventories can produce no rows. The summary is about the returned supported inventory, not proof that every installed application or ecosystem was checked.
 
 For a selected update batch, `UpdateCoordinator`:
 
@@ -409,6 +437,8 @@ For a selected update batch, `UpdateCoordinator`:
 10. Stops subsequent items if a result summary cannot be saved, and releases the gate in `finally`.
 
 The operation gate also protects file cleanup and is acquired around managed cleanup actions by the UI workflow. UI busy state prevents conflicting user actions across the broader workflow. The gate is an in-process exclusion mechanism, not an operating-system lock on external package managers.
+
+The core preflight rechecks the selected provider and exact key; it does not rerun the entire cross-provider ownership resolution before each item. Ordinary per-item failures do not automatically pause every subsequent item from that provider. The plan's provider-wide authentication/source-failure pause and universal interactive-installer detection are not separate implemented coordinator mechanisms. Failed/result rows require another check and fresh selection before retry.
 
 There is no universal rollback, automatic retry queue, or force-stop installer path. A new check and deliberate selection are the normal recovery route for stale or failed items.
 
@@ -435,11 +465,15 @@ The following describes commands and APIs **implemented in source**. These are n
 | .NET global tools / SDK inventory | `tool list --global --format json`; `--list-sdks` | Explicit `tool update --global <id>` for a global tool; SDK inventory directs users to the Windows installer owner |
 | Visual Studio | `vswhere -all -products * -format json -utf8`; standard installer location fallback | Adjacent `setup.exe update --installPath <instance> --passive --norestart`; selected instance, no workload-add request |
 | Windows WSL | `--version` and `--list --quiet`, with UTF-16 output handling | Explicit `--update` for Windows WSL; distro package checks are separate |
-| VS Code extensions | `--list-extensions --show-versions` through each supported editor entry point | Explicit `--install-extension <id>` for that editor's default profile; latest version is not independently established |
-| PowerShell resources | Bundled script uses `Get-InstalledModule` and repository-specific `Find-Module` | Selected `Update-Module -RequiredVersion`; checks the reviewed installed location first; excludes modules under `$PSHOME` and Windows |
+| VS Code extensions | `--list-extensions --show-versions` through each supported editor entry point | Explicit `--install-extension <id> --force` for the selected, already installed extension in that editor's default profile; latest version is not independently established |
+| PowerShell resources | Bundled script uses `Get-InstalledModule` and repository-specific `Find-Module`; `pwsh`, or Windows PowerShell when no `pwsh` is found | Selected `Update-Module -RequiredVersion`; checks the reviewed installed location first; excludes modules under `$PSHOME` and Windows |
 | TruffleHog | Installed executable `--version` | Unsupported when no verified installation owner/update contract exists; no invented self-updater |
 
 Absence of an ordinary manager generally yields no package rows. A stale registration, failed query, or unsupported detected installation can yield explicit unavailable/unsupported rows. An empty valid package inventory is not a parser failure.
+
+The VS Code `--force` flag is the specific exception recorded in the original plan on 2026-11-01; it is not permission to force other manager operations. `CommandProviderTests` asserts the selected extension argument sequence and the absence of `--force` for the other tested manager families.
+
+Both PowerShell resource actions launch the bundled `Updates/PowerShellResources.ps1` with `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`, followed by fixed action parameters. This is a child-process execution-policy argument for the bundled script, not a persistent policy change or a user-supplied script facility. It does not resolve repository trust/authentication automatically. The script checks the reviewed module name/location before invoking PowerShellGet; actual manager semantics remain an external integration boundary.
 
 ### 7.2 WinGet specifics
 
@@ -455,6 +489,8 @@ Absence of an ordinary manager generally yields no package rows. A stale registr
 
 Do not claim universal installer/pin/interactive behavior solely because the structured API is used. The recorded live integration test proves a read-only catalog query in its test environment, not every real installer scenario.
 
+WinGet catalog connection/search awaits are not bound to `ProcessRunner`'s timeout. The cancellation token is observed by task scheduling and while enumerating matches; an in-flight COM catalog call is not immediately canceled by the UI's Cancel check action. There is no dedicated source- or pin-management UI.
+
 ### 7.3 Parsing and post-check rules
 
 `ProviderParser` normalizes NULs, ANSI escape sequences, and a leading BOM where used. JSON is preferred, but uv, Android SDK, Bun, VS Code extensions, APT, and Snap include explicit text-format assumptions.
@@ -469,6 +505,8 @@ Do not claim universal installer/pin/interactive behavior solely because the str
 - After an exact-target update, command-provider verification requires that target version. For updater-only rows without a known target, it requires a readable matching-kind row and a changed version string.
 
 Consequently, an updater that exits successfully but leaves the same reported version can remain `CompletedUnverified`. This is deliberate honesty about the available proof, not proof that the updater did nothing correctly.
+
+Command mutations map exit codes `0` → `CompletedUnverified`, `3010` → `RestartRequired`, `1223` → `Canceled`, and all other/missing codes → `Failed`. This mapping is exit-code-based rather than uniformly using `ProcessResult.Success`; post-verification is a distinct step. The coordinator only invokes that step for `CompletedUnverified`, not for `RestartRequired`. If `VerifyAsync` throws, the coordinator preserves `CompletedUnverified` and includes the exception message in `Detail`.
 
 ### 7.4 WSL distributions, APT, and Snap
 
@@ -488,6 +526,10 @@ Global host discovery lists distributions without entering them. **Check distro*
 | Snap verification | `snap list <id>` checks the resulting revision |
 
 Approval is tied to current version, target, Snap revision where relevant, and preview text. The provider recomputes the preview before execution and consumes the approval; changed or absent approval blocks mutation. No `apt update`, blanket distro upgrade, stored sudo password, or automatic authentication setup is performed.
+
+APT package keys retain the architecture suffix, such as `libc6:amd64` and `libc6:i386`, throughout preview, exact `id=target` installation, and `dpkg-query --show --showformat=${Version}` verification. Multiarch installations therefore remain separate. Snap uses `snap:<id>` installation identities and the reviewed revision in `PackageMetadata.Extra`; its current version is not populated by the refresh-list check. Snap preview is explanatory text, not a simulated dependency transaction.
+
+These distro checks return upgrade candidates and error rows, not a complete inventory of all installed/up-to-date packages. Failed mutation results are broadly mapped to `NeedsInteraction`; no sudo credential is captured. A later global host check replaces the displayed inventory without running the existing distro providers; another explicit distro check is needed to repopulate their rows.
 
 ## 8. Cleanup discovery and classification
 
@@ -510,6 +552,8 @@ Approval is tied to current version, target, Snap revision where relevant, and p
 ### 8.2 Filesystem roots
 
 `CleanupRootResolver` resolves paths from environment values and standard Windows folders, then deduplicates supported roots case-insensitively. Path support is restricted by `PathGuard.ValidLocalRoot`; no drive-root, UNC, removable/network, device-path, traversal, or alternate-stream root is accepted by that guard.
+
+Deduplication removes equal path strings after trimming a trailing separator; it is not physical-volume/file-ID deduplication or merging of overlapping roots. Optional system-drive `tmp`/`Temp` discovery uses the same `AddRoot` guard as other roots. The guard does not prove a directory exists or is readable: normal analysis handles missing/inaccessible roots separately. Unsupported owner-managed roots and protected system roots become descriptive groups without a normal recursive scan.
 
 | Area | Resolved locations and current handling |
 |---|---|
@@ -537,11 +581,13 @@ The analyzer uses filename markers rather than reading source contents:
 
 Detected project kind is inherited while traversing descendants. `reports`, `output`, `artifacts`, and `.native-artifacts` identify review-oriented output areas only within a recognized project context. Child artifact sets can remain separate rather than selecting a whole shared reports directory.
 
-The walk skips reparse-point entries and known protected subtrees such as `.git`, `node_modules`, `.idea`, `.vs`, `.codex`, worktrees, sessions, memories, generated images, attachments, and visualizations. It excludes the app's own runtime-state descendants.
+The walk skips reparse-point entries and the explicit subtree set `.git`, `node_modules`, `.idea`, `.vs`, `.codex`, `worktrees`, `sessions`, `memories_v2`, `generated_images`, `attachments`, and `visualizations`. Additional names, including `memories`, are protected at policy classification. It excludes the app's own runtime-state descendants from file candidates.
 
 When a `.git` entry is found, a successful `git ls-files --cached -z` query supplies tracked-file protection. If Git tracking cannot be established, otherwise eligible project output is downgraded to review-required. A directory name alone does not establish disposability: a web project's `bin/cli.js`, for example, is not a .NET build output.
 
 Inaccessible subdirectories generate warnings and unavailable groups while readable siblings can still contribute candidates. Scan warnings are deduplicated and capped at 200. They must not be replaced with invented zero-byte results.
+
+The 200-warning cap is applied when returning the analysis; the session accumulates warnings beforehand. Directory enumeration materializes one directory's entries with `GetFileSystemInfos`, and Git protection materializes a tracked-path set per discovered repository. Candidate storage is streamed to JSONL, but neither traversal nor grouping has a globally fixed memory ceiling. Recognition uses `.csproj` rather than `.sln`/`.slnx` alone, and Android markers do not include a standalone Groovy `settings.gradle`; use the table above as the actual recognition contract.
 
 ### 8.4 Policy ordering and thresholds
 
@@ -585,6 +631,8 @@ Each analysis creates `%LOCALAPPDATA%\UpKeep\Temp\<session-id>` with `owner.json
 
 The manifest bounds candidate loading for the UI, but groups and completed results remain in memory. Do not describe the entire application as constant-memory for arbitrarily large inventories.
 
+The JSONL manifest is created for every analysis, including small inventories; there is no size-triggered switch from an in-memory manifest. `Seal` holds a `FileShare.Read` lease, preventing ordinary writes/deletion while the analysis is active. Startup orphan removal snapshots and validates each recognized owned file before permanent removal, then removes the session directory only if empty. Failure to establish ownership/identity leaves it untouched.
+
 ## 9. Cleanup execution and managed actions
 
 ### 9.1 Direct-file execution
@@ -600,9 +648,11 @@ The manifest bounds candidate loading for the UI, but groups and completed resul
 
 Changed, inaccessible, or locked targets are skipped. A new file created after analysis is not automatically added to the deletion set. Ancestor handles remain held through the operation to constrain replacement races.
 
-Permanent removal uses `SetFileInformationByHandle` on the validated handle. Selected project roots are not recursively deleted. The app does not change ACLs or kill another application to make removal succeed.
+Permanent removal uses `SetFileInformationByHandle` on the validated handle. Selected project roots are not recursively deleted, and ordinary cleanup does not remove their empty directories afterward. The app does not change ACLs or kill another application to make removal succeed.
 
 Progress reporting is throttled to roughly 200-ms intervals during traversal/execution. Result counts are updated incrementally rather than repeatedly recounting a growing result collection for every file. The cleanup journal is written at operation boundaries and throttled checkpoints. A failed checkpoint stops queued removals while preserving accumulated results.
+
+The initial `Pending` write is required before removal. Later `Running` checkpoints use the guarded `SaveProgress` path; failed checkpoints set `journalFailed`, making subsequent selected records `Canceled`. Final summary-write failures do not discard already completed results. Cancellation is checked between candidates and by the recycler before native deletion; an already-started permanent operation is not rolled back.
 
 ### 9.2 Recycle Bin semantics
 
@@ -611,6 +661,8 @@ Progress reporting is throttled to roughly 200-ms intervals during traversal/exe
 If recycling is unavailable, declined, canceled, or fails, the app reports a skip/failure condition rather than requesting a permanent-delete fallback. There is no “empty Recycle Bin” feature.
 
 Result states include `Removed`, `Recycled`, `Completed`, `Skipped`, `Failed`, and `Canceled`. `CleanupResult` computes completed/skipped/failed totals from those states and exposes result pages of 200. Canceled items remain individual results; they are not silently relabeled as successful cleanup.
+
+`Skipped` totals include any state beginning with that word. There is currently no separate canceled-count property or canceled aggregate in the UI summary; canceled items are visible in the paged detail results. This is narrower than the original plan's four-way aggregate accounting requirement.
 
 ### 9.3 Size accounting
 
@@ -641,6 +693,10 @@ All enabled cache actions require separate deliberate selection from details:
 
 Exact effects are owned by the manager and are not inferred from directory names. Failed discovery can produce unavailable rows; not every manager error has identical UI reporting. There is no current generic cache-deletion rule for Gradle, Maven, Sonar internals, Playwright browser installations, Codex runtime versions, or arbitrary IDE/browser caches.
 
+Managed discovery selects the first resolved entry for each supported tool, unlike update providers that can enumerate multiple installations. pnpm/uv/Bun and pip cache paths are checked with `ValidLocalRoot`; npm preserves its returned cache string and NuGet preserves the manager's description. Before execution, `ManagedActions.ExecuteAsync` repeats each action's `LocationQuery` and skips the action if the location has changed or cannot be rechecked. Cache commands still use their manager's current configuration; the recheck does not lock that configuration. Only AVD actions have the additional pre/post inventory checks described below. Ordinary cache completion means `ProcessResult.Success`, not verified removal of specified files or measured space.
+
+An unavailable npm cache query is omitted rather than rendered as an unavailable row. Other supported cache queries and failed interpreter/AVD discovery generally create explicit unavailable actions. Missing tools are omitted; there is no generic filesystem fallback.
+
 Cache discovery's pip path uses the Python-manager inventory; the update provider's additional registry-interpreter coverage must not be assumed to exist identically in cache discovery.
 
 ### 9.5 Android virtual devices
@@ -650,11 +706,13 @@ AVDs are discovered with `android emulator list`. The AVD root follows `ANDROID_
 - An AVD is distinct from the Android SDK emulator package and from a shared system image.
 - Current size and system-image identity are explicitly unavailable.
 - If any detected `emulator` or `qemu-system` process is running, removal is blocked conservatively; the app does not claim per-device process ownership.
-- Execution checks for a running emulator again and refreshes the AVD inventory before mutation.
+- Removal requires exactly one absolute local `path` in `<name>.ini` matching the default `<root>/<name>.avd` directory. Missing, ambiguous, redirected, or nondefault configurations remain unavailable. The configured path and directory identity are rechecked after refreshing the AVD inventory and before mutation; execution also checks for a running emulator again.
 - Selected removal uses `android emulator remove <name>` and then checks that the device is no longer listed.
 - It does not stop an emulator, reset a device, delete snapshots separately, uninstall an SDK, or request deletion of shared system images.
 
 These commands are implemented, but no real user AVD removal is established by the historical fixture tests.
+
+`ExecuteManagedActionsAsync` appends each manager outcome to the already accumulated direct-file results, including its name/location. A thrown manager or pre-action journal error becomes a `Failed` result and cancels subsequent queued actions. Earlier outcomes remain displayed. The final UI summary write is guarded separately: failure adds a visible warning while the result list is still shown and the completed analysis/selection is discarded. This prevents a late storage/manager exception from hiding earlier cleanup results.
 
 ## 10. Processes and privilege boundaries
 
@@ -677,6 +735,8 @@ These commands are implemented, but no real user AVD removal is established by t
 | `Mutation` | Cancellation is checked before launch; an active process is awaited without a probe timeout or cancellation-driven kill |
 
 The `IProcessRunner` signature accepts a progress callback, but the current implementation captures output rather than forwarding a live console stream through it. UI progress comes from workflow/provider stage reports. Do not assume terminal output is continuously displayed.
+
+Probe stream reads use the same linked deadline as the process wait. This bounds capture when the original child exits but a descendant still holds stdout/stderr open. The kill path only kills the original process tree if the original process has not exited; it is not a guarantee that every descendant of an already-exited probe is terminated. The regression test retains its own descendant PID/start-time identity and tears it down explicitly. Active mutation reads and waits continue without the probe cancellation token.
 
 Provider-specific code interprets exit codes and may map them to restart, cancellation, or interaction states. Review both `ProcessResult` and the provider's mapping when evaluating success semantics; the existence of the shared success property alone does not prove every provider uses it identically.
 
@@ -712,9 +772,13 @@ Current client/helper checks include:
 - Candidate validation requires the selected fixed root, relative paths, permanent method, and `ProtectedTemp` rule ID.
 - The helper uses a 40-second connection deadline; subsequent requests rely on parent checks and pipe disconnection instead of a session-wide deadline. The client has a 45-second connection deadline and a bounded five-second exit wait after disconnection. Interrupted batches preserve previously received results. Inaccessible analysis entries are skipped and reported as a partial result.
 
+The nonce is 32 random bytes encoded as 64 hexadecimal characters. Protocol validation also rejects undefined `ProtectedAction` values. Analysis streams `Analyzing` batches with `Last=false`, followed by a terminal `Completed` or `Partial` response; removal returns individual results. Denied UAC (Win32 error 1223) is `Canceled`. Transport/cancellation errors are returned as `Blocked` with accumulated batches; the window catches other helper-launch `Win32Exception` failures and shows them. The five-second client exit wait never force-kills an in-flight helper operation.
+
 **Current product boundary:** the UI exposes only analysis of `WindowsTemp`. It displays an explicit message that protected removal is not enabled until the real elevated handshake has been verified in an authorized Windows test session. The helper and protocol contain removal code, but that is not an enabled, validated user-facing deletion feature.
 
-The helper's age-based enumeration is a separate implementation from normal `CleanupPolicy`. Do not assume all normal analyzer protections are inherited automatically. Any future work to enable protected removal must inspect both paths and their tests, preserve the fixed-operation boundary, and validate the real UAC/pipe behavior. Protocol unit tests alone do not establish end-to-end privilege security.
+The helper's age-based enumeration is a separate implementation from normal `CleanupPolicy`: it skips reparse points, reports inaccessible entries through a callback, snapshots files at least seven days old, and labels them `ProtectedTemp`. It does not apply the normal source/credential extension policy. Removal resolves the fixed root again, snapshots that root at removal time, checks age, and validates candidate file identity/containment before handle deletion. Do not describe this as carrying the normal analyzer's entire root/policy snapshot across elevation.
+
+Any future work to enable protected removal must inspect both paths and their tests, preserve the fixed-operation boundary, and validate the real UAC/pipe behavior. `ProtectedTempServiceTests` directly links the service and calls `AnalyzeRoot` on owned fixture paths; it does not start the elevated executable. `CleanupProtocolTests` uses in-memory streams for serialization, truncation/disconnect, and validation; those tests do not establish real named-pipe peer authentication. No binary signature/hash validation is implemented for the adjacent helper; the described trust checks use paths, process identities, nonce, and pipe peer IDs.
 
 ### 10.4 Trust and privacy boundaries
 
@@ -766,7 +830,10 @@ Atomic writes temporarily create a uniquely named sibling `.tmp` file and remove
 - A previous `Pending` or `Running` record loads as `Interrupted`.
 - Unreadable/malformed prior state also produces an interrupted warning.
 - Startup shows the warning in both main views; it does not resume, retry, reinstall, or repeat deletion automatically.
-- Individual full results are available during the current process lifetime; the summary is not a persistent detailed result browser.
+- Individual results are transient UI state; the summary is not a persistent detailed result browser.
+- Update results live in the current inventory until another check replaces them; cleanup results are accessible through the current result surface as described in section 4.5. Neither collection is restored from the journal.
+
+`Total`/`Completed` are bookkeeping fields, not always successful-item counts. Update completion counts processed results, including failed/canceled items. Cleanup's initial total uses individually selected IDs rather than expanding group selections; checkpoints use total zero, and final totals count result records. Use actual `CleanupResult`/`UpdateResult` states to determine outcomes, not journal counters alone.
 
 ### 11.4 Atomic replacement
 
@@ -790,10 +857,12 @@ The historical verification records a reproduced native replacement failure and 
 | Microsoft.NET.Test.Sdk | `18.11.0` | [Test project](tests/UpKeep.Tests/UpKeep.Tests.csproj) |
 | xUnit | `xunit.v3.mtp-off` `4.0.2` (executable test project; existing VSTest runner) | Test project |
 | xunit.runner.visualstudio | `4.0.1`, private assets | Test project |
+| SonarScanner for .NET | `dotnet-sonarscanner` `12.0.0`, local tool | [.config/dotnet-tools.json](.config/dotnet-tools.json) |
+| .NET coverage collector | `dotnet-coverage` `18.12.0`, local tool | Local tool manifest |
 
-Nullable reference types and implicit usings are enabled. NuGet lockfile generation is enabled, and all four projects contain `packages.lock.json`; inspected direct locked versions match the project references. Do not edit a dependency version without considering its corresponding lockfile and the supported Windows/toolchain baseline.
+Nullable reference types, implicit usings, and unsafe blocks for native interop are enabled. NuGet lockfile generation is enabled, and all five projects contain `packages.lock.json`; inspected direct locked versions match the project references. `UpKeep.UiTests` uses the same Windows App SDK, SDK BuildTools, and WinGet interop versions as the app. The local tool manifest disables roll-forward for its two tools. These development tools are not application runtime dependencies. Do not edit a dependency version without considering its corresponding lockfile and the supported Windows/toolchain baseline.
 
-The app sets `UseWinUI=true`, `WindowsPackageType=None`, `EnableMsixTooling=false`, and `EnableWinAppRunSupport=false`. Trimming and single-file publication are disabled. These are actual project choices; do not replace them with assumptions based on leftover template profiles.
+The app and UI harness set `UseWinUI=true`, `WinUISDKReferences=false`, `WindowsPackageType=None`, `EnableMsixTooling=false`, and `EnableWinAppRunSupport=false`. Trimming and single-file publication are disabled. These are actual project choices; do not replace them with assumptions based on leftover template profiles. No checked-in CI workflow or separate production release-version configuration was found. The template manifests' `1.0.0.0` values do not establish a versioned, signed release process.
 
 ### 12.2 Developer commands
 
@@ -821,6 +890,41 @@ dotnet test tests/UpKeep.Tests/UpKeep.Tests.csproj -c Debug --filter 'FullyQuali
 
 Choose tests for the actual change. A documentation-only update does not require running live managers, publishing another build, opening the desktop app, or performing real cleanup.
 
+For the same exclusions used by the repository's ordinary Windows-check configuration:
+
+```powershell
+dotnet test tests/UpKeep.Tests/UpKeep.Tests.csproj -c Debug -p:Platform=x64 --filter 'Category!=LiveReadOnly&FullyQualifiedName!~UpKeep.Tests.NativeRecycleIntegrationTests'
+```
+
+This still runs controlled filesystem/process/ACL/symlink fixtures and host-root/registry discovery tests. It is not a no-filesystem-write or no-host-inspection mode. Symbolic-link tests need a Windows environment that permits their creation; no test command authorizes enabling elevation or changing system policy to make them pass. `dotnet test` on `UpKeep.Tests` does not execute the separate WinUI harness.
+
+### 12.2.1 Windows-check wrappers
+
+The optional wrappers resolve `tools/InvokeWindowsProjectCheck.ps1` in `WINDOWS_CHECK_ROOT`, or in a sibling `Windows-check` checkout by default. That external implementation is not part of this repository. Missing checkout/script produces an explicit error directing the user to README; ordinary `dotnet` commands remain independent of it. Each wrapper forwards additional arguments and its exit code.
+
+| Local wrapper | External check name |
+|---|---|
+| [bc.ps1](tools/bc.ps1) | `build` |
+| [tc.ps1](tools/tc.ps1) | `test` |
+| [lc.ps1](tools/lc.ps1) | `lint` |
+| [dc.ps1](tools/dc.ps1) | `dependency` |
+| [db.ps1](tools/db.ps1) | `dependabot` |
+| [ql.ps1](tools/ql.ps1) | `codeql` |
+| [sc.ps1](tools/sc.ps1) | `security` |
+| [ss.ps1](tools/ss.ps1) | `secret` |
+
+`windows-check.config.psd1` configures a Debug/x64 solution build and one xUnit project with both live provider tests and the native Recycle Bin test excluded. Building the solution includes the WinUI harness, but does not run it. Wrapper names are routing configuration, not proof that the external checks have run or passed.
+
+### 12.2.2 Sonar and WinUI coverage workflow
+
+`tools/sonar.ps1 -PlanOnly` prints its intended steps before requiring credentials or starting analysis. A real run requires both `-AllowExternalUpload` and a `SONAR_TOKEN` supplied through the environment. The script refers to a user profile command as a credential-loading convenience, but that profile is not checked in or verified here. Never place the credential in this document, source, or copied command output.
+
+The real workflow restores the two local tools and solution, starts SonarScanner, builds all projects non-incrementally with build servers disabled and one MSBuild node, then collects two VS Coverage XML files. Its xUnit filter starts from the Windows-check exclusions and explicitly adds back `NativeRecycleIntegrationTests` and `WinGetIntegrationTests`; `ProviderInventoryIntegrationTests` remains excluded. It also launches the separate WinUI executable with `UPKEEP_UI_TEST_REPORT` pointing to its JSON report. This requires an interactive desktop and performs disposable fixture mutations, including native recycling in the xUnit run. It is not just a static/secrets scan.
+
+Outputs are `reports/sonar.txt` and `reports/sonar-test-results/UpKeep.Tests.trx`, `UpKeep.Tests.xml`, `UpKeep.UiTests.xml`, and `UpKeep.UiTests.json`. The script removes only those four prior result files before collection. Before SonarScanner end/upload, it requires a passing UI report and coverage file, valid nonempty xUnit coverage XML, and a completed, nonempty TRX with zero failures. It restores the previous `UPKEEP_UI_TEST_REPORT` value in `finally`. Console logging replaces the token with a redaction marker. Upload completion is not a queried server quality-gate result.
+
+The UI harness can also be launched directly from its Debug/x64 build output after an authorized build. It is a `WinExe`, not an xUnit project: its `App.OnLaunched` creates isolated storage, runs `RunTestFlowsAsync`, sets exit code 0/1, optionally writes the requested JSON/error report, and closes its own window/tray in `finally`. See section 13 for exact coverage and limits; do not launch it as a documentation validation step.
+
 ### 12.3 Output locations
 
 Shared build configuration directs outputs to:
@@ -831,9 +935,11 @@ artifacts/obj/<project-name>/...
 artifacts/scratch/<fixture-id>/...
 artifacts/tests/...
 artifacts/publish/...
+reports/...
+reports/sonar-test-results/...
 ```
 
-[.gitignore](.gitignore) excludes `artifacts/`, `.vs/`, nested `bin/` and `obj/`, user files, and `.superpowers/`. Local verification links under `artifacts/` may therefore be absent from a future source-only checkout. Preserve required evidence deliberately; an ignore rule is not deletion authorization.
+[.gitignore](.gitignore) excludes `artifacts/`, `reports/`, `.sonarqube/`, `.vs/`, nested `bin/` and `obj/`, user files, and `.superpowers/`. Local verification links under `artifacts/` and `reports/` may therefore be absent from a future source-only checkout. Build paths can include an `x64` segment depending on invocation; the Sonar script explicitly expects `artifacts/bin/UpKeep.UiTests/x64/Debug/net10.0-windows10.0.26100.0/win-x64/UpKeep.UiTests.exe`. Preserve required evidence deliberately; an ignore rule is not deletion authorization.
 
 ### 12.4 Publication
 
@@ -855,11 +961,13 @@ Required-file checks include `UpKeep.App.exe`, `UpKeep.App.pri`, `App.xbf`, `Mai
 
 The app project has an `IncludeXamlResourcesInPublish` target to include compiled XAML resources and its PRI. Missing those resources is a packaging concern, not necessarily an application-logic failure.
 
+The script checks required-file existence, not signatures, source revision, full content hashes, launch behavior, or UI acceptance. It publishes only the production app and helper, not the UI harness. It has no task-owned failed-publish teardown or automatic removal of superseded folders/ZIPs; future authorized publishing work must apply the artifact discipline in section 16 explicitly.
+
 Extract the entire distribution and start `UpKeep.App.exe`. The EXE alone is not the deliverable: the helper, native/runtime libraries, icon, PowerShell script, and XAML resources must remain together. Self-contained publication does not install every external package manager or eliminate WinGet's own platform requirements.
 
 ### 12.5 Existing local delivery evidence
 
-The 2026-10-31 verification report names `artifacts/publish/UpKeep-win-x64-20261031-174310` and its ZIP as that run's final handoff. The app and helper executables in the folder still existed when this document was written.
+The 2026-10-31 verification report names `artifacts/publish/UpKeep-win-x64-20261031-174310` and its ZIP as that run's final handoff. The folder, ZIP, and app/helper executables still existed during the 2026-11-01 review. Existence was checked; the complete distribution was not revalidated or launched.
 
 A later folder, `artifacts/publish/UpKeep-win-x64-startup-fix`, also exists locally. This documentation task did not establish its exact source provenance, completeness, test results, or runtime behavior. Do not automatically call either folder the verified latest build of the current source.
 
@@ -869,40 +977,65 @@ No new build or ZIP was produced for this document, and pre-existing output dire
 
 ### 13.1 Test organization
 
-The test project references Core and directly links the app's `RecycleBinService.cs`, `TrayNotification.cs`, and `CleanupText.cs`. It does not reference or drive the complete WinUI application. Passing those linked-source tests is not a substitute for testing actual window layout or interaction.
+`UpKeep.Tests` references Core and directly links the app's `RecycleBinService.cs`, `TrayNotification.cs`, `CleanupText.cs`, and the helper's `ProtectedTempService.cs`. It does not drive the complete WinUI application. `UpKeep.UiTests` is the separate linked-source WinUI executable described below. Test names and assertions describe coverage present in source; they are not evidence that the current revision passed a new run.
 
 | Behavior | Relevant test files |
 |---|---|
 | DPI conversion, fallback, and short work-area geometry | `PanelPlacementTests.cs` |
 | Single tray activation classification and keyboard selection messages | `TrayNotificationTests.cs` |
-| Process argument isolation, output limits, exit codes, probe timeout, mutation lifetime | `ProcessRunnerTests.cs` |
+| Process argument isolation, dual-stream/output limits, exit codes, prelaunch cancellation, child-only environment/UTF-16, probe deadline including inherited pipes, mutation lifetime | `ProcessRunnerTests.cs` |
 | Owner matching and separate installations | `InstallationOwnershipTests.cs` |
+| Node/editor entry-point identity, root deduplication/classification, actual host/registry discovery, invalid tool names | `RootDiscoveryTests.cs` |
 | npm/pip/uv/Android/extension parser contracts and unsafe identifiers | `ProviderContractTests.cs` |
-| Update preflight, progress stages, stop-after-current, duplicate keys, changed targets | `UpdateCoordinatorTests.cs` |
+| Fake-runner checks, selected mutation arguments, version verification, malformed inventories, exit mapping, PowerShell fallback/policy arguments, selected extension `--force` | `CommandProviderTests.cs` |
+| Update preflight, progress stages, stop-after-current, duplicate keys, changed targets, gate contention, journal-failure stop with earlier result retention | `UpdateCoordinatorTests.cs` |
 | Failed/empty post-update probes cannot prove success | `UpdateVerificationTests.cs` |
 | APT output parsing | `WslContractTests.cs` |
 | Explicit-only distro checks and invalidated transaction approval | `WslTransactionTests.cs` |
+| Architecture-specific APT identities, single-use APT/Snap approval, exact target/revision commands, failed preview/inventory/post-check | `WslProviderTests.cs` |
 | Cleanup eligibility, source/credential/Codex protection, age boundaries | `CleanupPolicyTests.cs`, `TemporarySourceProtectionTests.cs` |
-| Separate artifact sets, Git protection, partial inaccessible scan, project-type recognition, cancellation | `CleanupAnalyzerTests.cs` |
+| Separate artifact sets, Git protection, partial inaccessible scan, project-type recognition, cancellation, generated/review outputs under `src` and `tests` with nested protections | `CleanupAnalyzerTests.cs` |
 | Unsafe roots, changed file/ancestor, junctions, locks, validated handle deletion | `PathGuardTests.cs` |
-| New children after analysis, cancellation, no permanent recycle fallback, large result inventory | `CleanupExecutorTests.cs` |
+| New children after analysis, cancellation, no permanent recycle fallback, large result inventory, failed journal checkpoints and recycler exceptions without loss of earlier outcomes | `CleanupExecutorTests.cs` |
 | Result access beyond the first page | `CleanupResultTests.cs` |
 | Decimal size formatting, unknown sizes, missing project configuration, selection wording | `CleanupTextTests.cs` |
 | Manifest disposal, owned orphans, live/unknown session preservation | `ManifestLifecycleTests.cs` |
 | AVD active-at-analysis and started-after-analysis blocking | `ManagedActionTests.cs` |
+| Reviewed manager actions, rejected altered arguments, unavailable/invalid cache queries, pip deduplication, AVD inventory change and post-removal checks | `ManagedActionsTests.cs` |
 | Atomic settings, malformed-state preservation, injected write failure, interrupted journal, 500 repeated writes | `StorageLifecycleTests.cs` |
-| Fixed helper roots, forged identity, size bounds, disconnect | `CleanupProtocolTests.cs` |
+| Fixed helper roots, forged identity, escaping paths/method/rule rejection, size bounds, serialization, simulated stream disconnect | `CleanupProtocolTests.cs` |
+| Helper analysis preserves readable siblings and reports unavailable paths using fixture ACLs; no UAC | `ProtectedTempServiceTests.cs` |
+| Renamed checkout fixture disposal preserves adjacent files | `ScratchTests.cs` |
 | Actual Shell recycle-and-restore of an exact disposable fixture | `NativeRecycleIntegrationTests.cs` |
 | Installed command-provider inventory; `Category=LiveReadOnly` | `ProviderInventoryIntegrationTests.cs` |
 | Actual read-only unpackaged WinGet catalog query; `Category=LiveReadOnly` | `WinGetIntegrationTests.cs` |
 
-All files above are under [tests/UpKeep.Tests](tests/UpKeep.Tests). `Scratch.cs` creates isolated fixture directories beneath `artifacts/scratch`, validates teardown scope, and avoids following reparse directories during its own cleanup. `UnitTest1.cs` is an empty template test.
+All files above are under [tests/UpKeep.Tests](tests/UpKeep.Tests). Provider output fixtures are embedded strings/fake runners inside these test files; no separate `Fixtures/Providers` directory exists. `Scratch.cs` searches upward for `UpKeep.slnx`, so a renamed checkout works without relying on the directory name `UpKeep`. It creates a GUID child of that checkout's `artifacts/scratch`, validates the exact parent/GUID and ancestor reparse points before teardown, and deletes nested links without traversing their targets. The same fixture helper is linked into the UI harness. Fixture ACL tests remove their exact deny rule in `finally`.
 
 The command-provider live test writes `artifacts/tests/provider-coverage.json`. Its assertions validate specific result invariants; a passing test does not imply every installed manager returned complete metadata or every provider supports mutation. Inspect `Complete`, states, and details when using that report.
 
+The WinGet live test asserts a readable installed version and unavailable states on source-attention rows; it does not require every catalog/source to succeed. `PathGuardTests.AncestorBecomesJunctionAfterAnalyze_IsRejected` currently creates a directory symbolic link with `Directory.CreateSymbolicLink`; its historical name is not proof of a separate junction fixture. Pure panel geometry tests likewise do not inspect a rendered footer.
+
+### 13.1.1 WinUI workflow harness
+
+[MainWindow.TestFlows.cs](tests/UpKeep.UiTests/MainWindow.TestFlows.cs) adds a test-only partial of the production `MainWindow`. The harness renders real XAML/WinUI controls and invokes production workflow methods. It replaces provider/process services with `FixtureProvider`, `NoProcesses`, `DistroRunner`, and `CacheRunner`, and directs settings/manifests/journal writes into `Scratch`. It does not launch the production `App` entry point or test the real single-instance launch handshake.
+
+Current assertions cover:
+
+- Initial five categories, disabled unselected actions, hide/show, deactivation/tray-toggle suppression, and two-view navigation.
+- Eligible updates versus Other tools, Select all, single selected fake updates and verification, empty/unavailable versus all-current summaries, and result selection clearing.
+- Dialog acceptance/cancellation and isolated settings save; unavailable-item Copy details is canceled, so clipboard writing is not asserted.
+- Old temporary fixture analysis/removal (201 owned files), group/category/file selection clearing, file/result paging, and Back focus on rebuilt category controls.
+- Locking conflicting scans during cleanup preparation, updater confirmation, and a deferred WSL preview; declined dialogs preserve the relevant analysis and restore idle controls.
+- Stop-after-current and exit decisions with an already-held gate, scan cancellation, explicit fake distro checks and preview decisions, and selected fake cache operations.
+- A recycler/manager/journal failure combination that preserves earlier file outcomes, reports later failures, clears completed selection/manifest state, releases the gate, and shows final summary-write failure.
+- Declining protected analysis before elevation; there is no real UAC approval or helper handshake in the harness.
+
+Dialog primary buttons are invoked through WinUI automation peers; cancellation uses `ContentDialog.Hide`. Some actions call internal handlers directly rather than injecting OS mouse/keyboard events. This is executable Windows workflow coverage, not a screenshot-comparison suite, Narrator assessment, full keyboard matrix, real installer test, or proof of the published binary. Temporary-file removal is real but confined to the harness's owned fixtures; fake recycler/manager success is not real recycling/cache pruning. The optional report contains only `passed` and `assertions` on success, or exception text on failure, without a source hash or run timestamp.
+
 ### 13.2 Historical recorded results
 
-The existing TRX was inspected while preparing this document. It records:
+The original TRX was inspected while preparing this document. It records:
 
 | Measure | Recorded value |
 |---|---|
@@ -915,11 +1048,39 @@ The existing TRX was inspected while preparing this document. It records:
 
 The associated verification report records a Debug build with zero warnings/errors, successful Release self-contained publication, read-only WinGet and command-manager checks, and a native Recycle Bin fixture round-trip. It explicitly says that two final presentation-only changes were compiled after the recorded test run without another live UI pass.
 
-**Later source exists.** Current files and tests have changes dated 2026-11-01, including tray activation/progress and cleanup summary/partial-scan behavior. The historical 114-test result does not prove those later changes or the whole current tree. This document intentionally does not invent a new total or claim a current green test run.
+Additional local evidence was inspected, without rerunning its commands:
+
+| Evidence | What it actually records | Limit |
+|---|---|---|
+| `reports/test-test-tests-UpKeep.Tests-UpKeep.Tests.csproj.txt` | 2026-11-01 05:24:39 start, 128 passed / 0 failed / 0 skipped; filter excludes live provider and native recycling tests | Early source snapshot; text report, not a current run |
+| `reports/sonar-test-results/UpKeep.Tests.trx` | 2026-11-01 14:21:09–14:21:26 +02:00; total/executed/passed 203, failed/not executed 0 | Includes WinGet and native Recycle Bin tests; omits command-provider live inventory; predates later source corrections |
+| `reports/sonar.txt` | 2026-11-01 14:19:56 start; five-project Debug/x64 build with zero warnings/errors, 203 passing xUnit cases, two coverage outputs, successful analysis upload | Server quality gate was not queried; log says SCM publishing was disabled; not proof of current HEAD |
+| `reports/sonar-test-results/UpKeep.UiTests.json` | `passed=true`, 77 assertions | Associated older coverage harness summary, no embedded revision |
+| `artifacts/tests/coderabbit-pr1-ui.json` | `passed=true`, 94 assertions | File last-write metadata is 2026-11-01 14:59:09 Helsinki; no embedded revision/run timestamp |
+| `artifacts/tests/coderabbit-pr1-followup-ui.json` | `passed=true`, 101 assertions | File last-write metadata is 2026-11-01 15:15:39 Helsinki; no embedded revision/run timestamp |
+
+The UI assertion numbers are checks within one harness execution, not xUnit test counts. Filesystem timestamps are qualified context, not source provenance. Existing coverage XML files are artifacts from those earlier binaries; no current coverage percentage is asserted here.
+
+**Later source exists.** Commits `8e9edea` (2026-11-01 15:00:14 +02:00) and `8887708` (15:16:11 +02:00) contain corrections after the 203-test run. The later UI summaries report passing fixture flows but cannot independently tie that claim to a complete source revision or published folder. Neither 114 nor 203 is a verified current-suite total/pass. No current-HEAD build/test/quality-gate result is claimed by this document.
+
+### 13.2.1 Corrections present in the reviewed source
+
+The two correction commits and current tests establish the following implementation changes; this is source/history inspection, not a new test result:
+
+| Change | Current owning code / regression source |
+|---|---|
+| Prevent a competing scan during confirmation or WSL preview from replacing reviewed data | `MainWindow.Workflows.cs`; UI harness deferred-preview and canceled-cleanup flows |
+| Preserve cleanup results across a later manager exception or summary-save failure | `ExecuteManagedActionsAsync`, `CleanSelected`, `CleanupExecutor.SaveProgress`; UI failure flows and executor tests |
+| Restore cleanup Back focus after row rebuilding; suppress immediate reopen after deactivation | `CloseDetails`, `detailsCategory`, `HideOnDeactivation`, `TogglePanel`; UI harness |
+| Recognize generated/review outputs beneath source/test trees while retaining nested source, tracked-file, credential, and evidence protections | `CleanupAnalyzer`, `CleanupPolicy`; analyzer and policy fixtures, including ordinary `bin/Release` versus retained release artifacts |
+| Preserve readable protected-temp candidates when a sibling is inaccessible; retain accumulated pipe batches and bound connection/exit waits | `ProtectedTempService`, helper `Program`, `ElevationClient`; fixture analysis tests, with real handshake still unverified |
+| Bound probe pipe reads even after the parent exits | `ProcessRunner`; owned-descendant deadline regression |
+| Keep APT architecture in keys and commands; allow the narrow selected-extension `--force` exception; set bundled PowerShell child policy explicitly | `WslDistroProvider`, `CommandProvider`, plan exception, provider tests |
+| Apply the shared root guard to optional system-drive temporary locations; make fixture teardown and wrapper lookup independent of checkout name | `CleanupRootResolver`, `Scratch`, wrapper scripts; root-discovery and renamed-checkout fixtures |
 
 ### 13.3 Runtime evidence boundaries
 
-The historical record establishes a limited visual inspection of the corrected compact dark panel. It also records that the user stopped Computer Use, after which remaining UI automation was not performed in that implementation task.
+The 2026-10-31 record establishes a limited visual inspection of the corrected compact dark panel. It also records that the user stopped Computer Use, after which remaining UI automation was not performed in that implementation task. Later local reports add WinUI harness execution on Windows, with fake providers and owned temporary-file fixtures. They do not close the original manual accessibility/display/lifecycle matrix or prove runtime behavior of the current published app.
 
 Still not established by the evidence inspected for this document:
 
@@ -934,9 +1095,11 @@ Fixtures and fakes cover important failure paths. They do not prove external ins
 
 ### 13.4 Checks performed for this document
 
-This was a documentation task. Preparation inspected local instructions/configuration, source, tests, the design reference, and existing verification evidence. Files were checked with the required deterministic Sonar secrets scanner before their contents were read.
+This was a documentation task. Preparation read the prior `PROJECT.md` in full and inspected all application/Core/helper source files, XAML/platform adapters, both test projects and fixture implementations, the original plan and design image, README, project/shared configuration, dependency lockfiles, local check wrappers, publishing script, Git state/history, and relevant historical local verification artifacts. Files were checked with the required deterministic Sonar secrets scanner before their contents were read; the root document, repository tree, and historical evidence directories returned no detected secrets.
 
-No application build/test suite, live update check, real maintenance operation, UAC flow, or desktop UI test was run for this task. The document's own validation concerns references, coverage of the inspected implementation, and the distinction between current code and historical results.
+Document validation checked local Markdown link targets, section anchors, source/configuration names against the inspected tree, dependency references against lockfiles, historical TRX counters and report scope, and the final diff for whitespace errors and documentation-only changes. No external documentation URL, remote Git state, or cloud quality gate was revalidated.
+
+No application build/test suite, live update check, real maintenance operation, UAC flow, or desktop UI test was run for this task. No publishing, commit, push, or pull request was performed. Source/test inspection and report parsing are not new application test results.
 
 ## 14. Known limitations and specification differences
 
@@ -945,25 +1108,31 @@ These are useful context for questions and reviews, not an authorization to expa
 | Area | Current boundary |
 |---|---|
 | Protected system deletion | Helper code exists; UI removal is unavailable; real handshake remains unverified |
-| UI validation | A compact dark view was historically inspected; the full accessibility/DPI/lifecycle matrix remains open |
-| Source versus test evidence | The recorded 114-test run predates current source changes |
+| UI validation | A compact dark view was historically inspected and later fixture-driven WinUI runs report passes; full accessibility/DPI/lifecycle and current published-app checks remain open |
+| Source versus test evidence | Both the 114- and 203-test runs predate current corrections; later UI JSON summaries have no revision provenance; no fresh current-HEAD run |
 | Distribution | The historical handoff and a later local folder both exist; current source-to-published-binary equivalence was not established |
 | Updater-only tools | No reliable latest-version check is claimed; explicit action, excluded from Select all |
 | TruffleHog | No mutation without a verified installation owner/update contract |
 | VS Code | Default extension profile only; no general profile-selection UI |
 | PowerShell | PowerShellGet-managed modules, not all built-in modules or a generic script/resource manager |
-| .NET | Global tools and SDK inventory are explicit; no separate blanket runtime/workload updater |
+| .NET | Global tools and SDK list are explicit; no separate runtime/workload inventory or updater is implemented |
 | Android | Current provider uses the Android CLI; no implemented general legacy `sdkmanager` fallback is established here |
 | AVD metadata | Size and image identity unavailable; active-process blocking is conservative and global |
 | WSL | Requires explicit distro check; APT indexes are not refreshed; sudo/authentication can require user action outside UpKeep |
+| Provider completeness and pauses | Coordinator consumes result rows rather than aggregating `Complete`; no separate provider-wide failure pause or universal installer-prompt detection |
+| Check cancellation | CLI probes have bounded waits/capture; WinGet COM awaits and preparatory WSL previews do not all support immediate cancellation |
 | Cache coverage | Unsupported internal/runtime/browser/cache roots remain protected; npx environments and old Codex runtimes are not blanket-deleted |
+| Managed cache verification | Reviewed commands and queried cache locations are rechecked before mutation; configuration is not locked and exact removal is not post-verified; AVD inventory checks are separate |
 | Check concurrency | Implementation is sequential; the plan permits at most two independent checks, not a requirement that two must run |
-| UI list architecture | Native ListViews with dynamically created elements; do not assume an MVVM/data-template refactor or measured large-list performance |
-| Full results after restart | One bounded summary persists; detailed per-item history does not |
+| UI list architecture | Native ListViews with dynamically created elements; the planned small view model/separate views were replaced by code-behind; no measured arbitrary-inventory performance guarantee |
+| Cleanup details/accounting | Last-modified metadata is not displayed; canceled items lack a separate aggregate; candidate pages have only Next; protected analysis shows only the first 200 entries |
+| Empty directories and overlap | Direct cleanup removes manifest-listed files, not empty project directories; root deduplication is textual, not physical or overlap-aware |
+| Full results/history | One bounded summary persists; detailed per-item history does not; cleanup results have no reopen action after leaving their surface |
 | Diagnostic privacy | No persistent diagnostic archive; copied/current provider details are not guaranteed anonymized |
-| Scaffold files | Some unused template files and unsupported-architecture profiles remain intentionally outside unrelated cleanup scope |
+| Scaffold files | Unused MainPage and package/launch metadata remain; Class1, UnitTest1, and unsupported-architecture publish profiles are absent |
+| Tooling portability | Windows-check wrappers need a separate checkout; Sonar coverage needs an interactive desktop and explicit external-upload authorization |
 
-The plan includes desired behaviors such as comprehensive failure reporting and accessible interaction. Verify the actual affected source when judging whether a specific case already satisfies them. Do not convert a statement in this document or the plan into a passing acceptance result without evidence.
+The plan includes desired behaviors such as comprehensive failure reporting, sanitized copied diagnostics, accessible interaction, and supported cache/AVD post-checks. Some are narrower in the implementation as detailed above. Its planning-status wording and checkboxes are not a current completion ledger, and its proposed filenames are not the source map. This review updated only `PROJECT.md`; README, plan, and old reports retain their own historical wording. Verify the actual affected source when judging whether a specific case already satisfies a requirement. Do not convert a statement in this document or the plan into a passing acceptance result without evidence.
 
 ## 15. Code review and UI review guide
 
@@ -979,6 +1148,8 @@ Keep findings concrete: identify the trigger, actual behavior, user impact, owni
 |---|---|---|
 | Panel opens in the wrong position/size | `TrayIconService`, `PanelPlacement`, `MainWindow` constructor | Right-edge compact placement, monitor work area, DPI conversion |
 | Tray click hides immediately or toggles twice | `TrayNotification`, tray window procedure, activation handler | Version-4 versus legacy event mapping; deactivation timing |
+| Check/analysis starts while a selection is being confirmed | `UpdateSelected`, `CleanSelected`, `SetBusy`, `ReviewDistroTransactionsAsync` | Lock before the first asynchronous preparation/confirmation; preserve declined selection and release busy state |
+| Back loses focus in Cleanup | `ShowCategory`, `ShowFiles`, `CloseDetails`, `detailsCategory` | Resolve the rebuilt category button; do not focus a detached row |
 | UI appears idle while installing/checking | Workflow busy/progress logic and `UpdateCoordinator` | Report preflight, execution, and verification distinctly; do not kill active installers |
 | Wrong installation is offered/updated | `ToolLocator`, `InstallationKey`, `InstallationOwnership`, provider metadata | Distinct environments/roots remain separate; ambiguous owner blocks mutation |
 | Provider reports false “up to date” | Provider parser/check method and `RenderUpdates` | Failed, incomplete, localized, stale, or unavailable output is not empty success |
@@ -990,6 +1161,9 @@ Keep findings concrete: identify the trigger, actual behavior, user impact, owni
 | Cache/AVD action is unsafe or unclear | `ManagedActions` and selection/confirmation workflow | Reviewed manager scope, active emulator check, no invented size or process ownership |
 | Protected cleanup is being enabled | Client, protocol, helper program, protected service | Fixed roots, peer identity, lifecycle, policy differences, actual UAC validation |
 | Settings disappear or interrupted work repeats | `SettingsStore`, `AtomicFile`, `OperationJournal` | Preserve invalid/prior state; no automatic mutation replay |
+| Earlier cleanup results disappear after a later failure | `CleanupExecutor.SaveProgress`, `ExecuteManagedActionsAsync`, `CleanSelected` | Append failures, cancel later queued actions, preserve prior outcomes, guard final summary write |
+| A probe hangs after its parent process exits | `ProcessRunner` stream drain/deadline; `ProcessRunnerTests` | Shared probe read deadline; active mutation remains uncancelled; fixture owns descendant teardown |
+| Test coverage or check command is unclear | Both test projects, `windows-check.config.psd1`, `sonar.ps1` | Separate fixture/native/live checks, UI executable, report provenance, and upload permission |
 | Published app fails but Debug works | Project publish target, `Publish.ps1`, actual folder contents | Compiled XAML/PRI, native/runtime files, helper and script co-location |
 
 ### 15.3 Priority invariants
@@ -1036,7 +1210,7 @@ Status text should describe what the user can do or what happened. Technical pro
 
 ### 16.2 Git and delivery workflow
 
-No Git repository was present in this workspace at documentation time. Do not invent a branch, commit, remote, pull request, or CI result. If version control is initialized later, inspect the actual branch/status before changes and use a task-specific `codex/` branch when starting from a protected integration branch.
+At this review's start, `C:\Dev\UpKeep` was a Git repository with a clean working tree on `codex/initial-review`, HEAD `8887708`, and origin `https://github.com/Insaner1980/UpKeep.git`. The local history includes initial import/check tooling and the two correction commits discussed in section 13. The 2026-10-31 reports' statements that Git was absent are historical. Remote branch/default/protection state and any current pull-request or CI status were not queried. Always inspect actual branch/status again before a future change; use a task-specific `codex/` branch when starting from a protected integration branch.
 
 Commit and push require explicit requests. Never commit/push to protected integration branches. The user creates and merges pull requests manually; do not create, open, submit, or merge a PR automatically.
 

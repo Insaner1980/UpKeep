@@ -116,12 +116,22 @@ public sealed class UpdateCoordinator(IReadOnlyList<IUpdateProvider> providers, 
                 if (result.State == UpdateState.CompletedUnverified)
                 {
                     progress.Report(new(current, total, item.Name, UpdateState.Checking, "Verifying installed version…"));
-                    var verified = await provider.VerifyAsync(fresh.Request(), CancellationToken.None);
-                    result = result with
+                    try
                     {
-                        State = verified.Verified ? UpdateState.SucceededVerified : UpdateState.CompletedUnverified,
-                        Detail = verified.Verified ? "Installed version verified: " + verified.InstalledVersion : "Update finished; version not verified"
-                    };
+                        var verified = await provider.VerifyAsync(fresh.Request(), CancellationToken.None);
+                        result = result with
+                        {
+                            State = verified.Verified ? UpdateState.SucceededVerified : UpdateState.CompletedUnverified,
+                            Detail = verified.Verified ? "Installed version verified: " + verified.InstalledVersion : "Update finished; version not verified"
+                        };
+                    }
+                    catch (Exception error)
+                    {
+                        result = result with
+                        {
+                            Detail = "Update finished; version not verified. " + error.Message
+                        };
+                    }
                 }
             }
         }

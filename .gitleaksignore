@@ -1,0 +1,4 @@
+# Public SonarQube project identifier, not an authentication credential.
+# Limit suppression to these two verified historical findings.
+6a60584e89901422aefa7a88b07fa0ac77e06dc2:tools/sonar.ps1:generic-api-key:21
+becf01634f9db698414588dadd263309c4888262:tools/sonar.ps1:generic-api-key:21

@@ -54,7 +54,11 @@ public static partial class ElevationClient
                     results.AddRange(response.Results);
                     if (response.State is "Blocked" or "Failed" or "Partial")
                     {
-                        return response with { Candidates = all, Results = results };
+                        return response with
+                        {
+                            Candidates = all,
+                            Results = results
+                        };
                     }
                 } while (!response.Last);
             }

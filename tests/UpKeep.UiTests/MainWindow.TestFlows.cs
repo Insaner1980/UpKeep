@@ -45,6 +45,19 @@ public sealed partial class MainWindow
         Check(selectedUpdates.Count == 1 && UpdateButton.IsEnabled, "Select all enables only the eligible update.");
         SelectUpdates.IsChecked = false;
         Check(selectedUpdates.Count == 0, "Clearing selection disables updates.");
+        var updateOrigin = UpdateList.Items.OfType<Grid>().First().Children.OfType<Button>().Single();
+        ShowUpdateDetails([provider.Item], updateOrigin);
+        var detailCheck = detailsPanel!.Children.OfType<ListView>().Single().Items.OfType<Grid>().Single().Children.OfType<CheckBox>().Single();
+        var detailPeer = FrameworkElementAutomationPeer.CreatePeerForElement(detailCheck);
+        ((IToggleProvider)detailPeer.GetPattern(PatternInterface.Toggle)).Toggle();
+        CloseDetails();
+        Check(selectedUpdates.Contains(provider.Item.Key) && UpdateButton.IsEnabled, "Selecting an update in details enables the main update action on return.");
+        Check(UpdateList.Items.OfType<Grid>().First().Children.OfType<CheckBox>().Single().IsChecked == true && SelectUpdates.IsChecked == true,
+            "Returning from update details synchronizes row and select-all checkboxes.");
+        var restoredUpdateOrigin = UpdateList.Items.OfType<Grid>().First().Children.OfType<Button>().Single();
+        Check(ReferenceEquals(Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(Root.XamlRoot), restoredUpdateOrigin),
+            "Back restores focus to the live update Details button.");
+        SelectAllUpdates(false);
         ShowUpdateDetails(updates, CheckButton);
         Check(detailsPanel is not null && Navigation.Visibility == Visibility.Collapsed, "Update details replace navigation.");
         CloseDetails();
@@ -420,7 +433,10 @@ public sealed partial class MainWindow
 
     private sealed class DistroRunner : IProcessRunner
     {
-        public TaskCompletionSource<ProcessResult>? PendingPreview { get; set; }
+        public TaskCompletionSource<ProcessResult>? PendingPreview
+        {
+            get; set;
+        }
         public bool FailPreview
         {
             get; set;

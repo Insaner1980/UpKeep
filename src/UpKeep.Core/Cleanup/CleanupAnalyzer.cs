@@ -14,6 +14,16 @@ public sealed class CleanupAnalyzer(AppPaths paths, DiscoveryContext context)
         None = 0, DotNet = 1, Android = 2, Web = 4
     }
     private static readonly HashSet<string> ReviewDirectories = new(StringComparer.OrdinalIgnoreCase) { "reports", "output", "artifacts", ".native-artifacts" };
+    private static string ProtectedPathReason(string path)
+    {
+        var windowsTemp = UpKeep.Core.Elevation.CleanupProtocol.ResolveRoot("WindowsTemp");
+        var fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        return fullPath.Equals(windowsTemp, StringComparison.OrdinalIgnoreCase) ||
+            fullPath.StartsWith(windowsTemp + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            ? "Administrator access required. Use Analyze system temporary files."
+            : "Administrator access required. Analysis is unavailable for this protected location.";
+    }
+
     public Task<CleanupAnalysis> AnalyzeAsync(CleanupScope scope, IProgress<CleanupProgress> progress, CancellationToken token)
         => Task.Run(() => new AnalysisSession(paths, context, progress, token).RunAsync(scope), token);
 
@@ -57,11 +67,19 @@ public sealed class CleanupAnalyzer(AppPaths paths, DiscoveryContext context)
         private async Task AnalyzeRootAsync(CleanupRoot original)
         {
             token.ThrowIfCancellationRequested();
+            if (CleanupRootResolver.IsProtectedPath(original.Path))
+            {
+                original = original with
+                {
+                    Kind = RootKind.ProtectedSystem,
+                    Category = CleanupCategory.TemporaryFiles
+                };
+            }
             if (original.Kind is RootKind.ProtectedSystem or RootKind.ReviewOnly)
             {
                 groups[original.Id] = new(original.Id, original.Path, original.Category, 0, 0,
                     original.Kind == RootKind.ProtectedSystem ? Eligibility.Unavailable : Eligibility.Protected,
-                    original.Kind == RootKind.ProtectedSystem ? "Administrator access required. Use Analyze system temporary files." : "Owner-managed cache or runtime. No blanket filesystem removal is available.");
+                    original.Kind == RootKind.ProtectedSystem ? ProtectedPathReason(original.Path) : "Owner-managed cache or runtime. No blanket filesystem removal is available.");
                 return;
             }
             try
@@ -87,6 +105,13 @@ public sealed class CleanupAnalyzer(AppPaths paths, DiscoveryContext context)
         private async Task AnalyzeDirectoryAsync(CleanupRoot root, ScanNode node, Stack<ScanNode> pending)
         {
             token.ThrowIfCancellationRequested();
+            if (CleanupRootResolver.IsProtectedPath(node.Path))
+            {
+                groups[root.Id + "|" + node.Path] = new(root.Id + "|" + node.Path, node.Path,
+                    CleanupCategory.TemporaryFiles, 0, 0, Eligibility.Unavailable,
+                    ProtectedPathReason(node.Path));
+                return;
+            }
             FileSystemInfo[] entries;
             try
             {

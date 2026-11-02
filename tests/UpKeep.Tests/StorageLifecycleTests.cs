@@ -4,6 +4,19 @@ namespace UpKeep.Tests;
 
 public class StorageLifecycleTests
 {
+    [Fact]
+    public void OversizedSettingsSavePreservesTheReadablePreviousFile()
+    {
+        using var scratch = new Scratch();
+        var store = new SettingsStore(new(scratch.Root));
+        store.Save(new(1, [scratch.Root]));
+        var roots = Enumerable.Range(0, 100).Select(i => Path.Combine(scratch.Root, i.ToString(),
+            string.Join(Path.DirectorySeparatorChar, Enumerable.Repeat(new string('a', 100), 8)))).ToArray();
+        Assert.Throws<InvalidDataException>(() => store.Save(new(1, roots)));
+        Assert.Null(store.Load().Warning);
+        Assert.Equal(new[] { scratch.Root }, store.Load().Settings.ProjectRoots);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
