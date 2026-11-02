@@ -7,6 +7,15 @@ namespace UpKeep.Tests;
 public class RootDiscoveryTests
 {
     [Fact]
+    public void ProjectFolderInsideSystemTempCannotBecomeOrdinaryCleanup()
+    {
+        var path = Path.Combine(UpKeep.Core.Elevation.CleanupProtocol.ResolveRoot("WindowsTemp"), "UpKeep-root-classification-only");
+        var root = Assert.Single(CleanupRootResolver.Resolve([path]), r => r.Path == path);
+        Assert.Equal(RootKind.ProtectedSystem, root.Kind);
+        Assert.Equal(CleanupCategory.TemporaryFiles, root.Category);
+    }
+
+    [Fact]
     public void ScriptBasedNodeManagersAndEditorAreBoundToTheirOwningExecutable()
     {
         using var scratch = new Scratch();

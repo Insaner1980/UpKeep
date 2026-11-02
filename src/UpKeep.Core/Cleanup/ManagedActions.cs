@@ -6,12 +6,13 @@ using UpKeep.Core.Updates;
 
 namespace UpKeep.Core.Cleanup;
 
-public sealed record ManagedCleanupAction(string Id, string Name, CleanupCategory Category, ToolEntry Tool, IReadOnlyList<string> Arguments, string Location, string Detail, Eligibility Eligibility, string? AvdName = null);
-public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulatorRunning = null)
+public sealed record ManagedCleanupAction(string Id, string Name, CleanupCategory Category, ToolEntry Tool, IReadOnlyList<string> Arguments, string Location, string Detail, Eligibility Eligibility, string? AvdName = null, IReadOnlyList<string>? LocationQuery = null, FileIdentity? AvdIdentity = null);
+public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulatorRunning = null, Func<string>? avdRoot = null)
 {
     private const string EmulatorCommand = "emulator";
     private const string CacheCommand = "cache";
     private readonly Func<bool> emulatorRunning = emulatorRunning ?? AnyEmulatorRunning;
+    private readonly Func<string> avdRoot = avdRoot ?? (() => Environment.GetEnvironmentVariable("ANDROID_AVD_HOME") ?? Path.Combine(Environment.GetEnvironmentVariable("ANDROID_EMULATOR_HOME") ?? Environment.GetEnvironmentVariable("ANDROID_USER_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".android"), "avd"));
     private CancellationToken queryCancellation;
     private readonly Dictionary<string, ManagedCleanupAction> reviewed = [];
     private async Task<string> Query(ToolEntry tool, params string[] arguments)
@@ -65,7 +66,7 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                     throw new IOException();
                 }
 
-                result.Add(new(name + "-cache", label, CleanupCategory.PackageCaches, tool, action, root, "Manager action; exact removed files and reclaimed bytes are not known. Future installs may download again.", Eligibility.ReviewRequired));
+                result.Add(new(name + "-cache", label, CleanupCategory.PackageCaches, tool, action, root, "Manager action; exact removed files and reclaimed bytes are not known. Future installs may download again.", Eligibility.ReviewRequired, LocationQuery: query));
             }
             catch (IOException) { result.Add(new(name + "-cache", label, CleanupCategory.PackageCaches, tool, [], "Unknown", "Cache location unavailable; no removal is enabled.", Eligibility.Unavailable)); }
         }
@@ -92,11 +93,42 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
             return new(action.Id, "Skipped", 0, "Analyze again before running this manager action.");
         }
 
+        if (token.IsCancellationRequested)
+        {
+            return new(action.Id, "Canceled", 0, "Canceled before starting.");
+        }
+        if (action.LocationQuery is not null)
+        {
+            try
+            {
+                if (!string.Equals(await Query(action.Tool, action.LocationQuery.ToArray()), action.Location, StringComparison.OrdinalIgnoreCase))
+                    return new(action.Id, "Skipped", 0, "Cache location changed since analysis. Analyze again before cleaning.");
+            }
+            catch (IOException)
+            {
+                return new(action.Id, "Skipped", 0, "The reviewed cache location could not be rechecked. Analyze again before cleaning.");
+            }
+        }
+
         if (action.AvdName is not null)
         {
             if (emulatorRunning())
             {
                 return new(action.Id, "Skipped", 0, "An emulator started after analysis.");
+            }
+
+            try
+            {
+                if (action.AvdIdentity is not { } expected ||
+                    !string.Equals(action.Location, Path.Combine(avdRoot(), action.AvdName + ".avd"), StringComparison.OrdinalIgnoreCase))
+                    return new(action.Id, "Skipped", 0, "Virtual-device location changed. Analyze again before removing it.");
+                var current = PathGuard.Snapshot(action.Location);
+                if (current.Volume != expected.Volume || current.Id != expected.Id || current.Created != expected.Created)
+                    return new(action.Id, "Skipped", 0, "Virtual device was replaced since analysis. Analyze again before removing it.");
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                return new(action.Id, "Skipped", 0, "Virtual-device identity could not be rechecked.");
             }
 
             if (!(await Query(action.Tool, EmulatorCommand, "list")).Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Contains(action.AvdName, StringComparer.Ordinal))
@@ -115,6 +147,7 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
             return new(action.Id, "Failed", 0, "Manager action failed or its result was incomplete.");
         }
 
+        queryCancellation = CancellationToken.None;
         if (action.AvdName is not null && (await Query(action.Tool, EmulatorCommand, "list")).Split('\n', StringSplitOptions.TrimEntries).Contains(action.AvdName, StringComparer.Ordinal))
         {
             return new(action.Id, "Failed", 0, "The virtual device remains registered.");
@@ -132,7 +165,7 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                 try
                 {
                     var description = await Query(dotnet, "nuget", "locals", cache, "--list");
-                    result.Add(new("nuget-" + cache, "Clear NuGet " + cache, CleanupCategory.PackageCaches, dotnet, ["nuget", "locals", cache, "--clear"], description, "Clears this NuGet cache through dotnet. Restores may download packages again.", Eligibility.ReviewRequired));
+                    result.Add(new("nuget-" + cache, "Clear NuGet " + cache, CleanupCategory.PackageCaches, dotnet, ["nuget", "locals", cache, "--clear"], description, "Clears this NuGet cache through dotnet. Restores may download packages again.", Eligibility.ReviewRequired, LocationQuery: ["nuget", "locals", cache, "--list"]));
                 }
                 catch (IOException) { result.Add(new("nuget-" + cache, "NuGet " + cache, CleanupCategory.PackageCaches, dotnet, [], "Unknown", "Cache check unavailable.", Eligibility.Unavailable)); }
             }
@@ -146,7 +179,7 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
         {
             try
             {
-                result.Add(new("npm-cache", "Verify and reclaim npm cache", CleanupCategory.PackageCaches, npm, [CacheCommand, "verify"], await Query(npm, "config", "get", CacheCommand), "npm verifies integrity and garbage-collects unneeded cached data. It does not remove running npx environments.", Eligibility.ReviewRequired));
+                result.Add(new("npm-cache", "Verify and reclaim npm cache", CleanupCategory.PackageCaches, npm, [CacheCommand, "verify"], await Query(npm, "config", "get", CacheCommand), "npm verifies integrity and garbage-collects unneeded cached data. It does not remove running npx environments.", Eligibility.ReviewRequired, LocationQuery: ["config", "get", CacheCommand]));
             }
             catch (IOException)
             { // An unavailable optional npm cache is not offered for removal.
@@ -159,7 +192,7 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
         var android = context.Tools.Find("android");
         if (android is not null)
         {
-            var avdRoot = Environment.GetEnvironmentVariable("ANDROID_AVD_HOME") ?? Path.Combine(Environment.GetEnvironmentVariable("ANDROID_EMULATOR_HOME") ?? Environment.GetEnvironmentVariable("ANDROID_USER_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".android"), "avd");
+            var root = avdRoot();
             try
             {
                 foreach (var name in (await Query(android, EmulatorCommand, "list")).Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
@@ -170,10 +203,24 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                     }
 
                     bool active = emulatorRunning();
-                    result.Add(new("avd-" + name, name, CleanupCategory.Emulators, android, [EmulatorCommand, "remove", name], Path.Combine(avdRoot, name + ".avd"), active ? "An emulator is running; removal is blocked because ownership cannot be proved." : "Stopped. Size and image identity unavailable. Removes this virtual device and its data. Shared system images are retained.", active ? Eligibility.InUse : Eligibility.ReviewRequired, name));
+                    var location = Path.Combine(root, name + ".avd");
+                    FileIdentity? identity = null;
+                    try
+                    {
+                        if (!active && PathGuard.ValidLocalRoot(location))
+                            identity = PathGuard.Snapshot(location);
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+                    { // An unavailable or redirected directory cannot identify the reviewed device.
+                    }
+                    result.Add(new("avd-" + name, name, CleanupCategory.Emulators, android, [EmulatorCommand, "remove", name], location,
+                        active ? "An emulator is running; removal is blocked because ownership cannot be proved." : identity is null
+                            ? "Virtual-device directory identity unavailable. Removal is blocked."
+                            : "Stopped. Size and image identity unavailable. Removes this virtual device and its data. Shared system images are retained.",
+                        active ? Eligibility.InUse : identity is null ? Eligibility.Unavailable : Eligibility.ReviewRequired, name, AvdIdentity: identity));
                 }
             }
-            catch (IOException) { result.Add(new("avd-error", "Emulators", CleanupCategory.Emulators, android, [], avdRoot, "Virtual-device state unavailable. Removal unavailable.", Eligibility.Unavailable)); }
+            catch (IOException) { result.Add(new("avd-error", "Emulators", CleanupCategory.Emulators, android, [], root, "Virtual-device state unavailable. Removal unavailable.", Eligibility.Unavailable)); }
         }
     }
 
@@ -210,7 +257,7 @@ public sealed class ManagedActions(DiscoveryContext context, Func<bool>? emulato
                 return;
             }
 
-            result.Add(new("pip:" + path, "Clear pip cache", CleanupCategory.PackageCaches, python, ["-m", "pip", CacheCommand, "purge"], location, "Clears this interpreter's configured wheel and HTTP caches. Does not remove environments. Size unknown; future installs may download again.", Eligibility.ReviewRequired));
+            result.Add(new("pip:" + path, "Clear pip cache", CleanupCategory.PackageCaches, python, ["-m", "pip", CacheCommand, "purge"], location, "Clears this interpreter's configured wheel and HTTP caches. Does not remove environments. Size unknown; future installs may download again.", Eligibility.ReviewRequired, LocationQuery: ["-m", "pip", CacheCommand, "dir"]));
         }
         catch (IOException) { result.Add(new("pip:" + path, "pip cache", CleanupCategory.PackageCaches, python, [], path, "Cache location unavailable.", Eligibility.Unavailable)); }
     }

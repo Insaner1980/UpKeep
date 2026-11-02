@@ -57,6 +57,14 @@ public sealed class CleanupAnalyzer(AppPaths paths, DiscoveryContext context)
         private async Task AnalyzeRootAsync(CleanupRoot original)
         {
             token.ThrowIfCancellationRequested();
+            if (CleanupRootResolver.IsProtectedPath(original.Path))
+            {
+                original = original with
+                {
+                    Kind = RootKind.ProtectedSystem,
+                    Category = CleanupCategory.TemporaryFiles
+                };
+            }
             if (original.Kind is RootKind.ProtectedSystem or RootKind.ReviewOnly)
             {
                 groups[original.Id] = new(original.Id, original.Path, original.Category, 0, 0,
@@ -87,6 +95,13 @@ public sealed class CleanupAnalyzer(AppPaths paths, DiscoveryContext context)
         private async Task AnalyzeDirectoryAsync(CleanupRoot root, ScanNode node, Stack<ScanNode> pending)
         {
             token.ThrowIfCancellationRequested();
+            if (CleanupRootResolver.IsProtectedPath(node.Path))
+            {
+                groups[root.Id + "|" + node.Path] = new(root.Id + "|" + node.Path, node.Path,
+                    CleanupCategory.TemporaryFiles, 0, 0, Eligibility.Unavailable,
+                    "Administrator access required. Use Analyze system temporary files.");
+                return;
+            }
             FileSystemInfo[] entries;
             try
             {

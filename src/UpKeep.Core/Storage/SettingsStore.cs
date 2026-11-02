@@ -48,9 +48,14 @@ public sealed class SettingsStore(AppPaths paths, Action<string, string>? writer
             throw new InvalidDataException("Select local project folders, not drive roots.");
         }
 
-        AtomicFile.Write(FilePath, JsonSerializer.Serialize(settings with
+        var content = JsonSerializer.Serialize(settings with
         {
             ProjectRoots = settings.ProjectRoots.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
-        }), writer);
+        });
+        if (System.Text.Encoding.UTF8.GetByteCount(content) > 65536)
+        {
+            throw new InvalidDataException("Project settings exceed the supported file size.");
+        }
+        AtomicFile.Write(FilePath, content, writer);
     }
 }

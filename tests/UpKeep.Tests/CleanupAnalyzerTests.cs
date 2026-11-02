@@ -10,6 +10,19 @@ namespace UpKeep.Tests;
 
 public class CleanupAnalyzerTests
 {
+    [Fact]
+    public async Task SystemTempCannotBeScannedThroughAnOrdinaryRoot()
+    {
+        using var scratch = new Scratch();
+        var path = Path.Combine(UpKeep.Core.Elevation.CleanupProtocol.ResolveRoot("WindowsTemp"), "UpKeep-do-not-enumerate-" + Guid.NewGuid().ToString("N"));
+        using var analysis = await new CleanupAnalyzer(new(scratch.Root), new(new ToolLocator([]), new GitRunner(), scratch.Root))
+            .AnalyzeAsync(new([new("temp", path, RootKind.Temporary, CleanupCategory.TemporaryFiles)]),
+                new Progress<CleanupProgress>(), TestContext.Current.CancellationToken);
+        Assert.Empty(analysis.Manifest.Read());
+        Assert.Empty(analysis.Roots);
+        Assert.Contains("Administrator access required", Assert.Single(analysis.Groups).Reason);
+    }
+
     [Theory]
     [InlineData("src")]
     [InlineData("tests")]

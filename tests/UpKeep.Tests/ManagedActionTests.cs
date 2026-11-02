@@ -27,7 +27,9 @@ public class ManagedActionTests
         scratch.Write("android.exe", "");
         var runner = new Runner();
         bool active = false;
-        var service = new ManagedActions(new(new ToolLocator([scratch.Root]), runner, scratch.Root), () => active);
+        Directory.CreateDirectory(Path.Combine(scratch.Root, "FixtureAvd.avd"));
+        Directory.CreateDirectory(Path.Combine(scratch.Root, "OtherAvd.avd"));
+        var service = new ManagedActions(new(new ToolLocator([scratch.Root]), runner, scratch.Root), () => active, () => scratch.Root);
         var item = (await service.DiscoverAsync(TestContext.Current.CancellationToken))[0];
         active = true;
         Assert.Equal("Skipped", (await service.ExecuteAsync(item, TestContext.Current.CancellationToken)).State);
